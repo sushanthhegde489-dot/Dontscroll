@@ -995,7 +995,7 @@ fun DelayDialog(
     }
 
     var seconds by remember {
-        mutableStateOf("30")
+        mutableStateOf("3")
     }
 
     val automaticDelay =

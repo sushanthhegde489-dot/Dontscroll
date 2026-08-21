@@ -3,6 +3,8 @@ package com.sushanth.dontscroll.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
@@ -30,7 +32,6 @@ import com.sushanth.dontscroll.util.ScreenTimeManager
 import kotlinx.coroutines.delay
 import java.util.Locale
 
-
 class InterventionActivity :
     ComponentActivity() {
 
@@ -45,11 +46,6 @@ class InterventionActivity :
         const val EXTRA_DELAY_SECONDS =
             "delay_seconds"
 
-        /*
-         * SharedPreferences used to tell the
-         * accessibility service that the user has
-         * explicitly pressed Continue.
-         */
         private const val PREFS_NAME =
             "dontscroll_intervention"
 
@@ -57,11 +53,9 @@ class InterventionActivity :
             "allowed_package"
     }
 
-
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
-
         super.onCreate(savedInstanceState)
 
         val packageName =
@@ -83,36 +77,26 @@ class InterventionActivity :
                 30L
             )
 
-
         /*
-         * Do not allow Back to dismiss the
-         * intervention.
+         * Completely disable Back.
          */
-        onBackPressedDispatcher
-            .addCallback(
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
 
-                this,
-
-                object :
-                    OnBackPressedCallback(true) {
-
-                    override fun
-                            handleOnBackPressed() {
-
-                        /*
-                         * Intentionally empty.
-                         */
-                    }
+                override fun handleOnBackPressed() {
+                    /*
+                     * Intentionally empty.
+                     */
                 }
-            )
-
+            }
+        )
 
         setContent {
 
             DontscrollTheme {
 
                 InterventionScreen(
-
                     packageName =
                         packageName,
 
@@ -124,21 +108,7 @@ class InterventionActivity :
 
                     onUnlocked = {
 
-                        /*
-                         * IMPORTANT:
-                         *
-                         * Tell the accessibility service that
-                         * the user has completed the timer and
-                         * explicitly chose to continue.
-                         */
-                        allowPackageTemporarily(
-                            packageName
-                        )
-
-                        /*
-                         * Open the protected app.
-                         */
-                        openBlockedApp(
+                        unlockAndOpenApp(
                             packageName
                         )
                     }
@@ -147,27 +117,71 @@ class InterventionActivity :
         }
     }
 
-
     /*
-     * Store the package that the user has explicitly
-     * unlocked.
+     * User pressed Continue.
+     *
+     * The important order is:
+     *
+     * 1. Persist unlock.
+     * 2. Remove intervention task/window.
+     * 3. Launch protected app after the intervention
+     *    has been removed from the foreground.
      */
-    private fun allowPackageTemporarily(
+    private fun unlockAndOpenApp(
         packageName: String
     ) {
 
-        getSharedPreferences(
-            PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-            .edit()
-            .putString(
-                KEY_ALLOWED_PACKAGE,
+        /*
+         * Persist synchronously.
+         *
+         * This guarantees the accessibility service can see
+         * the unlock before the protected app becomes
+         * foreground.
+         */
+        val saved =
+            getSharedPreferences(
+                PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
+                .edit()
+                .putString(
+                    KEY_ALLOWED_PACKAGE,
+                    packageName
+                )
+                .commit()
+
+        if (!saved) {
+            /*
+             * If the preference could not be persisted,
+             * do not launch the protected app.
+             */
+            return
+        }
+
+        /*
+         * Remove this Activity/task first.
+         *
+         * This is intentional: we don't want the intervention
+         * window sitting underneath the Android clone-app
+         * resolver.
+         */
+        finishAndRemoveTask()
+
+        /*
+         * Give Android one main-loop turn to destroy/remove
+         * the intervention window.
+         *
+         * Then launch the protected application.
+         */
+        Handler(
+            Looper.getMainLooper()
+        ).post {
+
+            openBlockedApp(
                 packageName
             )
-            .apply()
+        }
     }
-
 
     private fun openBlockedApp(
         packageName: String
@@ -179,42 +193,41 @@ class InterventionActivity :
                     packageName
                 )
 
-        if (launchIntent != null) {
+        if (launchIntent == null) {
+            return
+        }
 
-            launchIntent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK
-            )
+        /*
+         * Explicitly launch the package's launcher activity.
+         *
+         * This avoids creating a generic implicit Intent.
+         */
+        launchIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+        )
+
+        try {
 
             startActivity(
                 launchIntent
             )
+
+        } catch (e: Exception) {
+
+            e.printStackTrace()
         }
-
-        /*
-         * Kill the intervention activity.
-         *
-         * It will not come back while the same package
-         * remains the foreground application because
-         * the accessibility service knows that the user
-         * already unlocked it.
-         */
-        finish()
     }
-
 
     override fun onPause() {
 
         super.onPause()
 
         /*
-         * Do NOT restart the timer here.
-         *
-         * The accessibility service controls when a new
-         * intervention is necessary.
+         * Do not modify the countdown or unlock state here.
          */
     }
 }
-
 
 /*
  * Intervention UI.
@@ -226,7 +239,6 @@ fun InterventionScreen(
     delaySeconds: Long,
     onUnlocked: () -> Unit
 ) {
-
     val context =
         LocalContext.current
 
@@ -241,7 +253,6 @@ fun InterventionScreen(
 
         mutableLongStateOf(0L)
     }
-
 
     /*
      * Update today's screen time.
@@ -261,12 +272,8 @@ fun InterventionScreen(
         }
     }
 
-
     /*
      * Countdown.
-     *
-     * This coroutine ends when the countdown reaches
-     * zero. It does NOT restart itself.
      */
     LaunchedEffect(
         packageName,
@@ -284,9 +291,7 @@ fun InterventionScreen(
         }
     }
 
-
     Column(
-
         modifier =
             Modifier
                 .fillMaxSize()
@@ -300,7 +305,6 @@ fun InterventionScreen(
     ) {
 
         Text(
-
             text =
                 "DON'T SCROLL",
 
@@ -320,7 +324,6 @@ fun InterventionScreen(
         )
 
         Text(
-
             text =
                 displayName,
 
@@ -344,7 +347,6 @@ fun InterventionScreen(
         )
 
         Text(
-
             text =
                 ScreenTimeManager
                     .formatDuration(
@@ -361,7 +363,6 @@ fun InterventionScreen(
             Modifier.height(40.dp)
         )
 
-
         if (remaining > 0L) {
 
             Text(
@@ -374,7 +375,6 @@ fun InterventionScreen(
             )
 
             Text(
-
                 text =
                     formatCountdown(
                         remaining
@@ -399,7 +399,6 @@ fun InterventionScreen(
         } else {
 
             Text(
-
                 text =
                     "You waited.",
 
@@ -419,13 +418,13 @@ fun InterventionScreen(
             ) {
 
                 Text(
-                    "Continue"
+                    text =
+                        "Continue"
                 )
             }
         }
     }
 }
-
 
 /*
  * Formats seconds as HH:MM:SS.
@@ -444,11 +443,8 @@ fun formatCountdown(
         seconds % 60L
 
     return String.format(
-
         Locale.US,
-
         "%02d:%02d:%02d",
-
         hours,
         minutes,
         secs
