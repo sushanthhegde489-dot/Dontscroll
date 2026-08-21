@@ -7,8 +7,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -62,7 +61,9 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
         super.onCreate(savedInstanceState)
 
         setContent {
@@ -73,10 +74,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Checks whether Dontscroll's accessibility service
- * is currently enabled by the user.
- */
 fun isAccessibilityServiceEnabled(
     context: Context
 ): Boolean {
@@ -98,18 +95,14 @@ fun isAccessibilityServiceEnabled(
             serviceInfo.resolveInfo?.serviceInfo
                 ?: return@any false
 
-        service.packageName == context.packageName &&
+        service.packageName ==
+                context.packageName &&
                 service.name ==
-                "com.sushanth.dontscroll.service.DoomGuardAccessibilityService"
+                "com.sushanth.dontscroll.service." +
+                "DoomGuardAccessibilityService"
     }
 }
 
-/**
- * Root composable.
- *
- * The user cannot access the main app until both
- * required permissions are enabled.
- */
 @Composable
 fun DontscrollApp() {
 
@@ -123,8 +116,7 @@ fun DontscrollApp() {
 
     val settingsLauncher =
         rememberLauncherForActivityResult(
-            contract =
-                ActivityResultContracts.StartActivityForResult()
+            ActivityResultContracts.StartActivityForResult()
         ) {
             permissionRefresh =
                 System.currentTimeMillis()
@@ -132,21 +124,17 @@ fun DontscrollApp() {
 
     val accessibilityEnabled =
         remember(permissionRefresh) {
-            isAccessibilityServiceEnabled(context)
+            isAccessibilityServiceEnabled(
+                context
+            )
         }
 
     val usageAccessEnabled =
         remember(permissionRefresh) {
-            ScreenTimeManager.hasUsageAccess(context)
+            ScreenTimeManager
+                .hasUsageAccess(context)
         }
 
-    /**
-     * Periodically check permission state.
-     *
-     * This handles Android versions where returning
-     * from Settings does not immediately trigger a
-     * recomposition.
-     */
     LaunchedEffect(Unit) {
 
         while (true) {
@@ -158,27 +146,35 @@ fun DontscrollApp() {
         }
     }
 
-    /**
-     * Setup screen.
-     */
-    if (!accessibilityEnabled || !usageAccessEnabled) {
+    if (
+        !accessibilityEnabled ||
+        !usageAccessEnabled
+    ) {
 
         RequiredPermissionsScreen(
-            accessibilityEnabled = accessibilityEnabled,
-            usageAccessEnabled = usageAccessEnabled,
+
+            accessibilityEnabled =
+                accessibilityEnabled,
+
+            usageAccessEnabled =
+                usageAccessEnabled,
 
             onAccessibilityClick = {
+
                 settingsLauncher.launch(
                     Intent(
-                        Settings.ACTION_ACCESSIBILITY_SETTINGS
+                        Settings
+                            .ACTION_ACCESSIBILITY_SETTINGS
                     )
                 )
             },
 
             onUsageAccessClick = {
+
                 settingsLauncher.launch(
                     Intent(
-                        Settings.ACTION_USAGE_ACCESS_SETTINGS
+                        Settings
+                            .ACTION_USAGE_ACCESS_SETTINGS
                     )
                 )
             }
@@ -187,17 +183,11 @@ fun DontscrollApp() {
         return
     }
 
-    /**
-     * Main application.
-     */
     DontscrollMainScreen(
         context = context
     )
 }
 
-/**
- * Permission/setup screen.
- */
 @Composable
 fun RequiredPermissionsScreen(
     accessibilityEnabled: Boolean,
@@ -208,13 +198,17 @@ fun RequiredPermissionsScreen(
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
+        color =
+            MaterialTheme
+                .colorScheme
+                .background
     ) {
 
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
 
             horizontalAlignment =
                 Alignment.CenterHorizontally,
@@ -225,7 +219,6 @@ fun RequiredPermissionsScreen(
 
             Text(
                 text = "Dontscroll",
-
                 style =
                     MaterialTheme
                         .typography
@@ -262,7 +255,7 @@ fun RequiredPermissionsScreen(
 
             Text(
                 text =
-                    "A couple of permissions are needed",
+                    "Permissions required",
 
                 style =
                     MaterialTheme
@@ -310,49 +303,25 @@ fun RequiredPermissionsScreen(
                 Modifier.height(24.dp)
             )
 
-            if (
-                accessibilityEnabled &&
-                usageAccessEnabled
-            ) {
+            Text(
+                text =
+                    "Both permissions are required " +
+                            "for Dontscroll to work.",
 
-                Text(
-                    text = "You're all set.",
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodyMedium,
 
-                    style =
-                        MaterialTheme
-                            .typography
-                            .titleMedium,
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary
-                )
-
-            } else {
-
-                Text(
-                    text =
-                        "Both permissions are required.",
-
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodyMedium,
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .onSurfaceVariant
-                )
-            }
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .onSurfaceVariant
+            )
         }
     }
 }
 
-/**
- * Individual permission card.
- */
 @Composable
 private fun PermissionCard(
     title: String,
@@ -364,9 +333,6 @@ private fun PermissionCard(
     Card(
         modifier =
             Modifier.fillMaxWidth(),
-
-        shape =
-            MaterialTheme.shapes.medium,
 
         colors =
             CardDefaults.cardColors(
@@ -407,18 +373,7 @@ private fun PermissionCard(
                         style =
                             MaterialTheme
                                 .typography
-                                .titleMedium,
-
-                        color =
-                            if (enabled) {
-                                MaterialTheme
-                                    .colorScheme
-                                    .onPrimaryContainer
-                            } else {
-                                MaterialTheme
-                                    .colorScheme
-                                    .onSurface
-                            }
+                                .titleMedium
                     )
 
                     Spacer(
@@ -434,15 +389,9 @@ private fun PermissionCard(
                                 .bodySmall,
 
                         color =
-                            if (enabled) {
-                                MaterialTheme
-                                    .colorScheme
-                                    .onPrimaryContainer
-                            } else {
-                                MaterialTheme
-                                    .colorScheme
-                                    .onSurfaceVariant
-                            }
+                            MaterialTheme
+                                .colorScheme
+                                .onSurfaceVariant
                     )
                 }
 
@@ -477,18 +426,13 @@ private fun PermissionCard(
                         Modifier.fillMaxWidth()
                 ) {
 
-                    Text(
-                        "Enable"
-                    )
+                    Text("Enable")
                 }
             }
         }
     }
 }
 
-/**
- * Main Dontscroll screen.
- */
 @Composable
 fun DontscrollMainScreen(
     context: Context
@@ -522,9 +466,6 @@ fun DontscrollMainScreen(
         )
     }
 
-    /**
-     * Load installed apps.
-     */
     LaunchedEffect(Unit) {
 
         apps =
@@ -533,9 +474,6 @@ fun DontscrollMainScreen(
             }
     }
 
-    /**
-     * Refresh usage every 10 seconds.
-     */
     LaunchedEffect(Unit) {
 
         while (true) {
@@ -547,9 +485,6 @@ fun DontscrollMainScreen(
         }
     }
 
-    /**
-     * Observe protected applications.
-     */
     val blockedApps by database
         .blockedAppDao()
         .getAll()
@@ -562,9 +497,6 @@ fun DontscrollMainScreen(
             it.packageName
         }
 
-    /**
-     * Today's usage.
-     */
     val usageList =
         remember(refresh) {
 
@@ -578,9 +510,6 @@ fun DontscrollMainScreen(
                     it.totalTimeMillis
         }
 
-    /**
-     * Search/filter.
-     */
     val filteredApps =
         apps.filter { app ->
 
@@ -610,9 +539,6 @@ fun DontscrollMainScreen(
                 Modifier.height(20.dp)
             )
 
-            /**
-             * Header.
-             */
             Text(
                 text = "Dontscroll",
 
@@ -650,11 +576,7 @@ fun DontscrollMainScreen(
                 Modifier.height(16.dp)
             )
 
-            /**
-             * Search.
-             */
             OutlinedTextField(
-
                 value = search,
 
                 onValueChange = {
@@ -665,9 +587,6 @@ fun DontscrollMainScreen(
                     Modifier.fillMaxWidth(),
 
                 singleLine = true,
-
-                shape =
-                    MaterialTheme.shapes.medium,
 
                 label = {
                     Text("Search apps")
@@ -684,9 +603,6 @@ fun DontscrollMainScreen(
                 Modifier.height(16.dp)
             )
 
-            /**
-             * App count/header.
-             */
             Row(
                 modifier =
                     Modifier.fillMaxWidth(),
@@ -728,9 +644,6 @@ fun DontscrollMainScreen(
                 Modifier.height(8.dp)
             )
 
-            /**
-             * App list.
-             */
             LazyColumn(
                 modifier =
                     Modifier.fillMaxSize(),
@@ -740,13 +653,11 @@ fun DontscrollMainScreen(
             ) {
 
                 items(
-
                     items = filteredApps,
 
                     key = {
                         it.packageName
                     }
-
                 ) { app ->
 
                     val blocked =
@@ -765,6 +676,10 @@ fun DontscrollMainScreen(
                         blocked =
                             blocked != null,
 
+                        automaticDelay =
+                            blocked?.automaticDelay
+                                ?: false,
+
                         screenTimeMillis =
                             screenTime,
 
@@ -772,20 +687,16 @@ fun DontscrollMainScreen(
 
                             if (enabled) {
 
-                                selectedApp =
-                                    app
+                                selectedApp = app
 
                             } else {
 
-                                if (blocked != null) {
-
+                                blocked?.let {
                                     scope.launch {
 
                                         database
                                             .blockedAppDao()
-                                            .delete(
-                                                blocked
-                                            )
+                                            .delete(it)
                                     }
                                 }
                             }
@@ -796,30 +707,26 @@ fun DontscrollMainScreen(
         }
     }
 
-    /**
-     * Unlock-delay dialog.
-     */
     selectedApp?.let { app ->
 
         DelayDialog(
             appName =
                 app.displayName,
 
+            screenTimeMillis =
+                usageMap[
+                    app.packageName
+                ] ?: 0L,
+
             onDismiss = {
                 selectedApp = null
             },
 
             onSave = {
-                    hours,
-                    minutes,
-                    seconds ->
+                    delaySeconds,
+                    automatic ->
 
-                val totalSeconds =
-                    hours * 3600L +
-                            minutes * 60L +
-                            seconds
-
-                if (totalSeconds > 0L) {
+                if (delaySeconds > 0L) {
 
                     val blockedApp =
                         BlockedApp(
@@ -830,7 +737,10 @@ fun DontscrollMainScreen(
                                 app.displayName,
 
                             unlockDelaySeconds =
-                                totalSeconds
+                                delaySeconds,
+
+                            automaticDelay =
+                                automatic
                         )
 
                     scope.launch {
@@ -849,13 +759,11 @@ fun DontscrollMainScreen(
     }
 }
 
-/**
- * Application list row.
- */
 @Composable
 fun AppRow(
     app: InstalledApp,
     blocked: Boolean,
+    automaticDelay: Boolean,
     screenTimeMillis: Long,
     onToggle: (Boolean) -> Unit
 ) {
@@ -960,7 +868,12 @@ fun AppRow(
                     )
 
                     Text(
-                        text = "Protected",
+                        text =
+                            if (automaticDelay) {
+                                "Protected • Automatic"
+                            } else {
+                                "Protected • Manual"
+                            },
 
                         style =
                             MaterialTheme
@@ -986,14 +899,92 @@ fun AppRow(
 }
 
 /**
- * Timer configuration dialog.
+ * Converts today's screen time into an unlock delay.
+ *
+ * Change these values later if you want a stricter
+ * or gentler automatic system.
  */
+fun calculateAutomaticDelay(
+    screenTimeMillis: Long
+): Long {
+
+    val minutes =
+        screenTimeMillis /
+                60_000L
+
+    return when {
+
+        minutes < 30L ->
+            15L
+
+        minutes < 60L ->
+            30L
+
+        minutes < 120L ->
+            60L
+
+        minutes < 180L ->
+            120L
+
+        minutes < 240L ->
+            180L
+
+        minutes < 300L ->
+            300L
+
+        else ->
+            600L
+    }
+}
+
+fun formatDelay(
+    seconds: Long
+): String {
+
+    return when {
+
+        seconds < 60L ->
+            "$seconds sec"
+
+        seconds % 60L == 0L -> {
+
+            val minutes =
+                seconds / 60L
+
+            if (minutes == 1L) {
+                "1 min"
+            } else {
+                "$minutes min"
+            }
+        }
+
+        else -> {
+
+            val minutes =
+                seconds / 60L
+
+            val remaining =
+                seconds % 60L
+
+            "$minutes min $remaining sec"
+        }
+    }
+}
+
 @Composable
 fun DelayDialog(
     appName: String,
+    screenTimeMillis: Long,
     onDismiss: () -> Unit,
-    onSave: (Long, Long, Long) -> Unit
+    onSave: (
+        Long,
+        Boolean
+    ) -> Unit
 ) {
+
+    var automatic by remember {
+        mutableStateOf(false)
+    }
 
     var hours by remember {
         mutableStateOf("0")
@@ -1006,6 +997,13 @@ fun DelayDialog(
     var seconds by remember {
         mutableStateOf("30")
     }
+
+    val automaticDelay =
+        remember(screenTimeMillis) {
+            calculateAutomaticDelay(
+                screenTimeMillis
+            )
+        }
 
     AlertDialog(
 
@@ -1035,8 +1033,8 @@ fun DelayDialog(
 
                 Text(
                     text =
-                        "How long should $appName " +
-                                "make you wait?",
+                        "Choose how long $appName " +
+                                "should make you wait.",
 
                     color =
                         MaterialTheme
@@ -1052,78 +1050,188 @@ fun DelayDialog(
                     modifier =
                         Modifier.fillMaxWidth(),
 
-                    horizontalArrangement =
-                        Arrangement.spacedBy(8.dp)
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
 
-                    OutlinedTextField(
-                        value = hours,
+                    Checkbox(
+                        checked = automatic,
 
-                        onValueChange = {
-                            hours =
-                                it.filter(
-                                    Char::isDigit
-                                )
-                        },
-
-                        modifier =
-                            Modifier.weight(1f),
-
-                        label = {
-                            Text("Hours")
-                        },
-
-                        singleLine = true,
-
-                        shape =
-                            MaterialTheme.shapes.medium
+                        onCheckedChange = {
+                            automatic = it
+                        }
                     )
 
-                    OutlinedTextField(
-                        value = minutes,
+                    Column {
 
-                        onValueChange = {
-                            minutes =
-                                it.filter(
-                                    Char::isDigit
-                                )
-                        },
+                        Text(
+                            text =
+                                "Automatic delay",
 
-                        modifier =
-                            Modifier.weight(1f),
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium
+                        )
 
-                        label = {
-                            Text("Minutes")
-                        },
+                        Text(
+                            text =
+                                "Based on today's screen time",
 
-                        singleLine = true,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
 
-                        shape =
-                            MaterialTheme.shapes.medium
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (automatic) {
+
+                    Spacer(
+                        Modifier.height(12.dp)
                     )
 
-                    OutlinedTextField(
-                        value = seconds,
-
-                        onValueChange = {
-                            seconds =
-                                it.filter(
-                                    Char::isDigit
-                                )
-                        },
-
+                    Surface(
                         modifier =
-                            Modifier.weight(1f),
-
-                        label = {
-                            Text("Seconds")
-                        },
-
-                        singleLine = true,
+                            Modifier.fillMaxWidth(),
 
                         shape =
-                            MaterialTheme.shapes.medium
+                            MaterialTheme.shapes.medium,
+
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .primaryContainer
+                    ) {
+
+                        Column(
+                            modifier =
+                                Modifier.padding(16.dp)
+                        ) {
+
+                            Text(
+                                text =
+                                    "Today's screen time",
+
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .labelMedium
+                            )
+
+                            Text(
+                                text =
+                                    ScreenTimeManager
+                                        .formatDuration(
+                                            screenTimeMillis
+                                        ),
+
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .titleMedium
+                            )
+
+                            Spacer(
+                                Modifier.height(8.dp)
+                            )
+
+                            Text(
+                                text =
+                                    "Unlock delay: ${
+                                        formatDelay(
+                                            automaticDelay
+                                        )
+                                    }",
+
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodyMedium
+                            )
+                        }
+                    }
+
+                } else {
+
+                    Spacer(
+                        Modifier.height(8.dp)
                     )
+
+                    Row(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        OutlinedTextField(
+                            value = hours,
+
+                            onValueChange = {
+                                hours =
+                                    it.filter(
+                                        Char::isDigit
+                                    )
+                            },
+
+                            modifier =
+                                Modifier.weight(1f),
+
+                            label = {
+                                Text("Hours")
+                            },
+
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = minutes,
+
+                            onValueChange = {
+                                minutes =
+                                    it.filter(
+                                        Char::isDigit
+                                    )
+                            },
+
+                            modifier =
+                                Modifier.weight(1f),
+
+                            label = {
+                                Text("Minutes")
+                            },
+
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = seconds,
+
+                            onValueChange = {
+                                seconds =
+                                    it.filter(
+                                        Char::isDigit
+                                    )
+                            },
+
+                            modifier =
+                                Modifier.weight(1f),
+
+                            label = {
+                                Text("Seconds")
+                            },
+
+                            singleLine = true
+                        )
+                    }
                 }
             }
         },
@@ -1133,22 +1241,41 @@ fun DelayDialog(
             TextButton(
                 onClick = {
 
-                    onSave(
-                        hours.toLongOrNull()
-                            ?: 0L,
+                    val delaySeconds =
+                        if (automatic) {
 
-                        minutes.toLongOrNull()
-                            ?: 0L,
+                            automaticDelay
 
-                        seconds.toLongOrNull()
-                            ?: 0L
-                    )
+                        } else {
+
+                            hours.toLongOrNull()
+                                ?.times(3600L)
+                                ?.plus(
+                                    (
+                                            minutes
+                                                .toLongOrNull()
+                                                ?: 0L
+                                            ) * 60L
+                                )
+                                ?.plus(
+                                    seconds
+                                        .toLongOrNull()
+                                        ?: 0L
+                                )
+                                ?: 0L
+                        }
+
+                    if (delaySeconds > 0L) {
+
+                        onSave(
+                            delaySeconds,
+                            automatic
+                        )
+                    }
                 }
             ) {
 
-                Text(
-                    "Save"
-                )
+                Text("Save")
             }
         },
 
@@ -1159,9 +1286,7 @@ fun DelayDialog(
                     onDismiss
             ) {
 
-                Text(
-                    "Cancel"
-                )
+                Text("Cancel")
             }
         }
     )

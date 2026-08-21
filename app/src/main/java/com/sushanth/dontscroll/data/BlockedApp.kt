@@ -8,5 +8,6 @@ data class BlockedApp(
     @PrimaryKey
     val packageName: String,
     val displayName: String,
-    val unlockDelaySeconds: Long
+    val unlockDelaySeconds: Long,
+    val automaticDelay: Boolean = false
 )

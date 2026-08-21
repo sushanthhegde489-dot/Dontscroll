@@ -10,18 +10,37 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface BlockedAppDao {
 
-    @Query("SELECT * FROM blocked_apps ORDER BY displayName ASC")
+    @Query(
+        "SELECT * FROM blocked_apps ORDER BY displayName ASC"
+    )
     fun getAll(): Flow<List<BlockedApp>>
 
-    @Query("SELECT * FROM blocked_apps WHERE packageName = :packageName LIMIT 1")
-    suspend fun getByPackage(packageName: String): BlockedApp?
+    @Query(
+        "SELECT * FROM blocked_apps " +
+                "WHERE packageName = :packageName " +
+                "LIMIT 1"
+    )
+    suspend fun getByPackage(
+        packageName: String
+    ): BlockedApp?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(app: BlockedApp)
+    @Insert(
+        onConflict = OnConflictStrategy.REPLACE
+    )
+    suspend fun insert(
+        app: BlockedApp
+    )
 
     @Delete
-    suspend fun delete(app: BlockedApp)
+    suspend fun delete(
+        app: BlockedApp
+    )
 
-    @Query("DELETE FROM blocked_apps WHERE packageName = :packageName")
-    suspend fun deleteByPackage(packageName: String)
+    @Query(
+        "DELETE FROM blocked_apps " +
+                "WHERE packageName = :packageName"
+    )
+    suspend fun deleteByPackage(
+        packageName: String
+    )
 }
