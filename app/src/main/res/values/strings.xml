@@ -1,0 +1,9 @@
+<resources>
+
+    <string name="app_name">Dont Scroll</string>
+
+    <string name="accessibility_service_description">
+        Detects when protected apps are opened and shows the Dont Scroll waiting screen.
+    </string>
+
+</resources>
