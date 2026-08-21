@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class DoomGuardAccessibilityService :
     AccessibilityService() {
@@ -23,40 +24,33 @@ class DoomGuardAccessibilityService :
         )
 
     /*
-     * The package that the user explicitly unlocked.
-     *
-     * Example:
-     *
-     * Instagram -> Continue
-     *
-     * allowedPackage = Instagram
+     * Package that was explicitly unlocked by Continue.
      */
     @Volatile
     private var allowedPackage: String? = null
 
     /*
-     * Last real application package observed in the foreground.
+     * Last REAL application package observed.
      *
-     * System/resolver packages are deliberately ignored,
-     * so they don't interfere with this state.
+     * We intentionally don't update this for Android/system
+     * windows.
      */
     @Volatile
     private var lastForegroundPackage: String? = null
 
     /*
-     * When the temporarily unlocked app was last exited.
-     *
-     * This is used for the short grace period.
+     * When the temporarily unlocked application was exited.
      */
     @Volatile
     private var lastAllowedPackageExitTime = 0L
 
     /*
-     * Prevent duplicate intervention launches caused by
-     * multiple accessibility events.
+     * Prevent repeated launches for the same accessibility event.
      */
+    @Volatile
     private var lastInterventionPackage: String? = null
 
+    @Volatile
     private var lastInterventionTime = 0L
 
 
@@ -64,20 +58,20 @@ class DoomGuardAccessibilityService :
 
         super.onServiceConnected()
 
-        /*
-         * Restore the temporary unlock if the service
-         * process was recreated.
-         */
         allowedPackage =
             readAllowedPackage()
 
-        /*
-         * We don't know the actual current foreground app
-         * when the service connects.
-         */
-        lastForegroundPackage = null
+        lastForegroundPackage =
+            null
 
-        lastAllowedPackageExitTime = 0L
+        lastAllowedPackageExitTime =
+            0L
+
+        lastInterventionPackage =
+            null
+
+        lastInterventionTime =
+            0L
     }
 
 
@@ -90,7 +84,7 @@ class DoomGuardAccessibilityService :
         }
 
         /*
-         * Only react to foreground/window changes.
+         * Only react to actual window/package changes.
          */
         if (
             event.eventType !=
@@ -108,7 +102,8 @@ class DoomGuardAccessibilityService :
         /*
          * Ignore our own application.
          *
-         * This includes InterventionActivity.
+         * This prevents InterventionActivity itself from
+         * triggering the service.
          */
         if (
             packageName ==
@@ -120,9 +115,6 @@ class DoomGuardAccessibilityService :
 
         /*
          * Ignore temporary Android/system windows.
-         *
-         * This is particularly important for cloned apps
-         * and Android's application resolver.
          */
         if (
             isTransientSystemPackage(
@@ -134,7 +126,46 @@ class DoomGuardAccessibilityService :
 
 
         /*
-         * Synchronize with persisted state.
+         * IMPORTANT:
+         *
+         * Accessibility can send many window-state events
+         * while navigating inside the same application.
+         *
+         * Example:
+         *
+         * Instagram
+         * Instagram comments
+         * Instagram keyboard
+         * Instagram dialog
+         *
+         * These are still the same package.
+         *
+         * Do not treat them as leaving/re-entering the app.
+         */
+        if (
+            packageName ==
+            lastForegroundPackage
+        ) {
+            return
+        }
+
+
+        handleForegroundPackage(
+            packageName
+        )
+    }
+
+
+    private fun handleForegroundPackage(
+        packageName: String
+    ) {
+
+        val previousPackage =
+            lastForegroundPackage
+
+
+        /*
+         * Read the latest persisted state.
          */
         allowedPackage =
             readAllowedPackage()
@@ -145,10 +176,100 @@ class DoomGuardAccessibilityService :
 
         /*
          * =====================================================
-         * CASE 1
+         * ACTIVE INTERVENTION
+         * =====================================================
          *
-         * The user has a temporary unlock and we are still
-         * inside that exact application.
+         * This MUST happen before normal allowed-package logic.
+         *
+         * Example:
+         *
+         * InterventionActivity
+         *       ↓
+         * user swipes to Instagram
+         *       ↓
+         * Instagram becomes foreground
+         *
+         * If the intervention is still active for Instagram,
+         * immediately bring the intervention back.
+         */
+        val interventionActive =
+            isInterventionActive()
+
+        val interventionPackage =
+            readInterventionPackage()
+
+
+        if (
+            interventionActive &&
+            interventionPackage != null &&
+            packageName ==
+            interventionPackage
+        ) {
+
+            /*
+             * Do NOT update lastForegroundPackage.
+             *
+             * Instagram is not supposed to become the logical
+             * foreground application while its intervention
+             * is active.
+             */
+            bringInterventionToFront(
+                packageName
+            )
+
+            return
+        }
+
+
+        /*
+         * Record the newly observed REAL application.
+         */
+        lastForegroundPackage =
+            packageName
+
+
+        /*
+         * =====================================================
+         * RECENTLY UNLOCKED APP
+         * =====================================================
+         *
+         * If Continue just opened the app, ignore the immediate
+         * accessibility event.
+         *
+         * The allowedPackage check below also protects us, but
+         * this makes the transition more robust.
+         */
+        val recentUnlockPackage =
+            readRecentUnlockPackage()
+
+        val recentUnlockTime =
+            readRecentUnlockTime()
+
+        if (
+            packageName ==
+            recentUnlockPackage
+        ) {
+
+            val elapsed =
+                SystemClock.elapsedRealtime() -
+                        recentUnlockTime
+
+            if (
+                elapsed <=
+                RECENT_UNLOCK_GRACE
+            ) {
+
+                lastAllowedPackageExitTime =
+                    0L
+
+                return
+            }
+        }
+
+
+        /*
+         * =====================================================
+         * CURRENTLY ALLOWED APPLICATION
          * =====================================================
          */
         if (
@@ -157,10 +278,8 @@ class DoomGuardAccessibilityService :
         ) {
 
             /*
-             * We have returned to the allowed app.
-             *
-             * If we were previously outside it, check whether
-             * the return happened within the grace period.
+             * We are returning to the temporarily unlocked
+             * application.
              */
             if (
                 lastAllowedPackageExitTime > 0L
@@ -170,74 +289,44 @@ class DoomGuardAccessibilityService :
                     SystemClock.elapsedRealtime() -
                             lastAllowedPackageExitTime
 
+
                 if (
                     elapsed <=
                     REOPEN_GRACE_PERIOD
                 ) {
 
-                    /*
-                     * Returned quickly enough.
-                     *
-                     * Keep the unlock alive.
-                     */
-                    lastAllowedPackageExitTime = 0L
-
-                    lastForegroundPackage =
-                        packageName
+                    lastAllowedPackageExitTime =
+                        0L
 
                     return
                 }
 
+
                 /*
-                 * Grace period expired.
+                 * User stayed away too long.
                  *
-                 * The user stayed away too long, so this
-                 * return should require the intervention again.
+                 * Temporary unlock has expired.
                  */
                 clearTemporaryUnlock()
 
-                lastForegroundPackage =
-                    packageName
+            } else {
 
-                checkProtectedApp(
-                    packageName
-                )
-
+                /*
+                 * Already inside the allowed application.
+                 */
                 return
             }
-
-            /*
-             * Normal case:
-             *
-             * User is already inside the allowed application.
-             */
-            lastForegroundPackage =
-                packageName
-
-            return
         }
 
 
         /*
          * =====================================================
-         * CASE 2
-         *
-         * The user just left the temporarily unlocked app.
+         * LEFT TEMPORARILY UNLOCKED APPLICATION
          * =====================================================
-         *
-         * Example:
-         *
-         * Instagram
-         *     ↓
-         * YouTube
-         *
-         * We DO NOT immediately clear the Instagram unlock.
-         *
-         * Instead we start the grace period.
          */
         if (
             currentAllowed != null &&
-            lastForegroundPackage ==
+            previousPackage ==
             currentAllowed &&
             packageName != currentAllowed
         ) {
@@ -248,18 +337,8 @@ class DoomGuardAccessibilityService :
 
 
         /*
-         * Record the new real foreground package.
-         */
-        lastForegroundPackage =
-            packageName
-
-
-        /*
-         * Check whether the newly foreground package
+         * Finally check whether the newly foreground package
          * is protected.
-         *
-         * We deliberately do this even if another app was
-         * temporarily unlocked.
          */
         checkProtectedApp(
             packageName
@@ -290,17 +369,7 @@ class DoomGuardAccessibilityService :
 
 
                 /*
-                 * This app is not protected.
-                 *
-                 * Do not clear the temporary unlock.
-                 *
-                 * It could simply be:
-                 *
-                 * - Launcher
-                 * - Settings
-                 * - Chrome
-                 * - Android resolver
-                 * - another unprotected app
+                 * Not a protected application.
                  */
                 if (
                     blocked == null
@@ -310,188 +379,18 @@ class DoomGuardAccessibilityService :
 
 
                 /*
-                 * Get the latest persisted unlock.
+                 * UI/Activity work must happen on main.
                  */
-                val currentAllowed =
-                    readAllowedPackage()
-
-                allowedPackage =
-                    currentAllowed
-
-
-                /*
-                 * =================================================
-                 * CASE:
-                 *
-                 * User returned to the same temporarily unlocked
-                 * protected application.
-                 * =================================================
-                 */
-                if (
-                    packageName ==
-                    currentAllowed
+                withContext(
+                    Dispatchers.Main.immediate
                 ) {
 
-                    val exitTime =
-                        lastAllowedPackageExitTime
-
-                    if (
-                        exitTime == 0L
-                    ) {
-                        return@launch
-                    }
-
-
-                    val elapsed =
-                        SystemClock.elapsedRealtime() -
-                                exitTime
-
-
-                    /*
-                     * Returned within the grace period.
-                     */
-                    if (
-                        elapsed <=
-                        REOPEN_GRACE_PERIOD
-                    ) {
-
-                        lastAllowedPackageExitTime =
-                            0L
-
-                        lastForegroundPackage =
-                            packageName
-
-                        return@launch
-                    }
-
-
-                    /*
-                     * Grace period expired.
-                     *
-                     * Clear the old unlock and continue so that
-                     * a new intervention is displayed.
-                     */
-                    clearTemporaryUnlock()
+                    showInterventionIfNeeded(
+                        blocked.packageName,
+                        blocked.displayName,
+                        blocked.unlockDelaySeconds
+                    )
                 }
-
-
-                /*
-                 * =================================================
-                 * CASE:
-                 *
-                 * User opened a DIFFERENT protected application.
-                 * =================================================
-                 *
-                 * Example:
-                 *
-                 * Instagram was unlocked.
-                 *
-                 * User opens YouTube.
-                 *
-                 * YouTube is protected.
-                 *
-                 * Instagram's temporary unlock is no longer
-                 * relevant.
-                 */
-                if (
-                    currentAllowed != null &&
-                    packageName != currentAllowed
-                ) {
-
-                    clearTemporaryUnlock()
-                }
-
-
-                /*
-                 * Duplicate accessibility-event protection.
-                 */
-                val now =
-                    SystemClock.elapsedRealtime()
-
-
-                if (
-                    packageName ==
-                    lastInterventionPackage &&
-                    now -
-                    lastInterventionTime <
-                    INTERVENTION_COOLDOWN
-                ) {
-
-                    return@launch
-                }
-
-
-                /*
-                 * Final persisted-state check.
-                 *
-                 * This protects against races where Continue
-                 * was pressed while this coroutine was running.
-                 */
-                val finalAllowed =
-                    readAllowedPackage()
-
-
-                allowedPackage =
-                    finalAllowed
-
-
-                if (
-                    packageName ==
-                    finalAllowed
-                ) {
-
-                    return@launch
-                }
-
-
-                /*
-                 * Record intervention launch.
-                 */
-                lastInterventionPackage =
-                    packageName
-
-                lastInterventionTime =
-                    now
-
-
-                val intent =
-                    Intent(
-                        this@DoomGuardAccessibilityService,
-                        InterventionActivity::class.java
-                    ).apply {
-
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        )
-
-                        putExtra(
-                            InterventionActivity
-                                .EXTRA_PACKAGE_NAME,
-
-                            blocked.packageName
-                        )
-
-                        putExtra(
-                            InterventionActivity
-                                .EXTRA_DISPLAY_NAME,
-
-                            blocked.displayName
-                        )
-
-                        putExtra(
-                            InterventionActivity
-                                .EXTRA_DELAY_SECONDS,
-
-                            blocked.unlockDelaySeconds
-                        )
-                    }
-
-
-                startActivity(
-                    intent
-                )
 
             } catch (e: Exception) {
 
@@ -501,13 +400,376 @@ class DoomGuardAccessibilityService :
     }
 
 
+    private fun showInterventionIfNeeded(
+        packageName: String,
+        displayName: String,
+        delaySeconds: Long
+    ) {
+
+        /*
+         * Re-read state because the database lookup happened
+         * asynchronously.
+         */
+        val currentAllowed =
+            readAllowedPackage()
+
+        allowedPackage =
+            currentAllowed
+
+
+        /*
+         * If the user already unlocked this package,
+         * don't show the intervention.
+         */
+        if (
+            packageName ==
+            currentAllowed
+        ) {
+            return
+        }
+
+
+        /*
+         * If an intervention is already active for this
+         * exact package, bring it forward rather than
+         * creating another Activity.
+         */
+        if (
+            isInterventionActive() &&
+            readInterventionPackage() ==
+            packageName
+        ) {
+
+            bringInterventionToFront(
+                packageName
+            )
+
+            return
+        }
+
+
+        /*
+         * If another intervention is active for a different
+         * package, don't overwrite it from a stale accessibility
+         * event.
+         */
+        if (
+            isInterventionActive()
+        ) {
+            return
+        }
+
+
+        /*
+         * Final persisted-state check.
+         *
+         * This protects against Continue being pressed while
+         * the database coroutine was running.
+         */
+        val finalAllowed =
+            readAllowedPackage()
+
+        allowedPackage =
+            finalAllowed
+
+
+        if (
+            packageName ==
+            finalAllowed
+        ) {
+            return
+        }
+
+
+        /*
+         * Duplicate accessibility-event protection.
+         */
+        val now =
+            SystemClock.elapsedRealtime()
+
+
+        if (
+            packageName ==
+            lastInterventionPackage &&
+            now -
+            lastInterventionTime <
+            INTERVENTION_COOLDOWN
+        ) {
+
+            return
+        }
+
+
+        /*
+         * Mark intervention ACTIVE BEFORE starting Activity.
+         *
+         * This is critical.
+         *
+         * If Android immediately reports the protected package
+         * again, the service already knows that an intervention
+         * exists.
+         */
+        val marked =
+            markInterventionActive(
+                packageName
+            )
+
+
+        if (!marked) {
+            return
+        }
+
+
+        lastInterventionPackage =
+            packageName
+
+        lastInterventionTime =
+            now
+
+
+        val intent =
+            Intent(
+                this@DoomGuardAccessibilityService,
+                InterventionActivity::class.java
+            ).apply {
+
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+
+                putExtra(
+                    InterventionActivity
+                        .EXTRA_PACKAGE_NAME,
+                    packageName
+                )
+
+                putExtra(
+                    InterventionActivity
+                        .EXTRA_DISPLAY_NAME,
+                    displayName
+                )
+
+                putExtra(
+                    InterventionActivity
+                        .EXTRA_DELAY_SECONDS,
+                    delaySeconds
+                )
+            }
+
+
+        try {
+
+            startActivity(
+                intent
+            )
+
+        } catch (e: Exception) {
+
+            /*
+             * If Android rejects the Activity launch,
+             * remove the active state so another attempt
+             * can happen.
+             */
+            clearInterventionState()
+
+            lastInterventionPackage =
+                null
+
+            lastInterventionTime =
+                0L
+
+            e.printStackTrace()
+        }
+    }
+
+
     /*
-     * Determines whether a package represents a temporary
-     * system/resolver window rather than a real application.
+     * Bring the intervention Activity to the foreground.
      *
-     * These packages must NOT count as the user leaving the
-     * protected application.
+     * This is used when the user tries to enter the protected
+     * application while its intervention is still active.
      */
+    private fun bringInterventionToFront(
+        packageName: String
+    ) {
+
+        val intent =
+            Intent(
+                this,
+                InterventionActivity::class.java
+            ).apply {
+
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                )
+
+                putExtra(
+                    InterventionActivity
+                        .EXTRA_PACKAGE_NAME,
+                    packageName
+                )
+            }
+
+
+        try {
+
+            startActivity(
+                intent
+            )
+
+        } catch (e: Exception) {
+
+            e.printStackTrace()
+        }
+    }
+
+
+    /*
+     * Mark an intervention as active.
+     */
+    private fun markInterventionActive(
+        packageName: String
+    ): Boolean {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .edit()
+            .putBoolean(
+                KEY_INTERVENTION_ACTIVE,
+                true
+            )
+            .putString(
+                KEY_INTERVENTION_PACKAGE,
+                packageName
+            )
+            .commit()
+    }
+
+
+    /*
+     * Clear intervention state.
+     *
+     * This is ONLY called when:
+     *
+     * - Continue was pressed, or
+     * - Activity launch failed.
+     */
+    private fun clearInterventionState() {
+
+        getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .edit()
+            .putBoolean(
+                KEY_INTERVENTION_ACTIVE,
+                false
+            )
+            .remove(
+                KEY_INTERVENTION_PACKAGE
+            )
+            .commit()
+    }
+
+
+    private fun isInterventionActive(): Boolean {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .getBoolean(
+                KEY_INTERVENTION_ACTIVE,
+                false
+            )
+    }
+
+
+    private fun readInterventionPackage(): String? {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .getString(
+                KEY_INTERVENTION_PACKAGE,
+                null
+            )
+    }
+
+
+    private fun readAllowedPackage(): String? {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .getString(
+                KEY_ALLOWED_PACKAGE,
+                null
+            )
+    }
+
+
+    private fun clearTemporaryUnlock() {
+
+        allowedPackage =
+            null
+
+        lastAllowedPackageExitTime =
+            0L
+
+
+        getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .edit()
+            .remove(
+                KEY_ALLOWED_PACKAGE
+            )
+            .remove(
+                KEY_RECENT_UNLOCK_PACKAGE
+            )
+            .remove(
+                KEY_RECENT_UNLOCK_TIME
+            )
+            .commit()
+    }
+
+
+    private fun readRecentUnlockPackage(): String? {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .getString(
+                KEY_RECENT_UNLOCK_PACKAGE,
+                null
+            )
+    }
+
+
+    private fun readRecentUnlockTime(): Long {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .getLong(
+                KEY_RECENT_UNLOCK_TIME,
+                0L
+            )
+    }
+
+
     private fun isTransientSystemPackage(
         packageName: String
     ): Boolean {
@@ -543,53 +805,6 @@ class DoomGuardAccessibilityService :
     }
 
 
-    /*
-     * Read the current temporary unlock.
-     */
-    private fun readAllowedPackage(): String? {
-
-        return getSharedPreferences(
-            PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-            .getString(
-                KEY_ALLOWED_PACKAGE,
-                null
-            )
-    }
-
-
-    /*
-     * Clear the temporary unlock.
-     */
-    private fun clearTemporaryUnlock() {
-
-        allowedPackage = null
-
-        lastAllowedPackageExitTime = 0L
-
-        getSharedPreferences(
-            PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-            .edit()
-            .remove(
-                KEY_ALLOWED_PACKAGE
-            )
-            .commit()
-
-
-        /*
-         * Reset duplicate-intervention state.
-         */
-        lastInterventionPackage =
-            null
-
-        lastInterventionTime =
-            0L
-    }
-
-
     override fun onInterrupt() {
         // Nothing required.
     }
@@ -608,28 +823,47 @@ class DoomGuardAccessibilityService :
         private const val PREFS_NAME =
             "dontscroll_intervention"
 
+
         private const val KEY_ALLOWED_PACKAGE =
             "allowed_package"
 
 
+        private const val KEY_INTERVENTION_ACTIVE =
+            "intervention_active"
+
+
+        private const val KEY_INTERVENTION_PACKAGE =
+            "intervention_package"
+
+
+        private const val KEY_RECENT_UNLOCK_PACKAGE =
+            "recent_unlock_package"
+
+
+        private const val KEY_RECENT_UNLOCK_TIME =
+            "recent_unlock_time"
+
+
         /*
-         * Duplicate accessibility-event protection.
-         *
-         * 1500 ms = 1.5 seconds.
-         *
-         * This is NOT the reopen grace period.
+         * Prevent duplicate launches from accessibility events.
          */
         private const val INTERVENTION_COOLDOWN =
             1500L
 
 
         /*
-         * How long the user can leave an unlocked app
-         * and return without seeing the intervention again.
-         *
-         * 5000 ms = 5 seconds.
+         * Returning to the previously unlocked application
+         * within this period is allowed.
          */
         private const val REOPEN_GRACE_PERIOD =
             3000L
+
+
+        /*
+         * Immediately after Continue, ignore the foreground
+         * event generated by launching the target application.
+         */
+        private const val RECENT_UNLOCK_GRACE =
+            1500L
     }
 }

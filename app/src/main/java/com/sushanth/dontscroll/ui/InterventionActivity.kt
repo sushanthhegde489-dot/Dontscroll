@@ -31,6 +31,7 @@ import com.sushanth.dontscroll.ui.theme.DontscrollTheme
 import com.sushanth.dontscroll.util.ScreenTimeManager
 import kotlinx.coroutines.delay
 import java.util.Locale
+import android.os.SystemClock
 
 class InterventionActivity :
     ComponentActivity() {
@@ -46,36 +47,97 @@ class InterventionActivity :
         const val EXTRA_DELAY_SECONDS =
             "delay_seconds"
 
+
         private const val PREFS_NAME =
             "dontscroll_intervention"
 
+
         private const val KEY_ALLOWED_PACKAGE =
             "allowed_package"
+
+
+        private const val KEY_INTERVENTION_ACTIVE =
+            "intervention_active"
+
+
+        private const val KEY_INTERVENTION_PACKAGE =
+            "intervention_package"
+
+
+        private const val KEY_RECENT_UNLOCK_PACKAGE =
+            "recent_unlock_package"
+
+
+        private const val KEY_RECENT_UNLOCK_TIME =
+            "recent_unlock_time"
     }
+
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
-        super.onCreate(savedInstanceState)
 
+        super.onCreate(
+            savedInstanceState
+        )
+
+
+        /*
+         * Get protected package.
+         */
         val packageName =
             intent.getStringExtra(
                 EXTRA_PACKAGE_NAME
             ) ?: run {
+
                 finish()
+
                 return
             }
 
+
+        /*
+         * Get display name.
+         */
         val displayName =
             intent.getStringExtra(
                 EXTRA_DISPLAY_NAME
             ) ?: "This app"
 
+
+        /*
+         * Get configured delay.
+         */
         val delaySeconds =
             intent.getLongExtra(
                 EXTRA_DELAY_SECONDS,
                 30L
             )
+
+
+        /*
+         * =====================================================
+         * MARK INTERVENTION ACTIVE
+         * =====================================================
+         *
+         * Do this every time the intervention Activity is
+         * created/reused for a protected package.
+         */
+        getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+            .edit()
+            .putBoolean(
+                KEY_INTERVENTION_ACTIVE,
+                true
+            )
+            .putString(
+                KEY_INTERVENTION_PACKAGE,
+                packageName
+            )
+            .commit()
+
 
         /*
          * Completely disable Back.
@@ -85,18 +147,26 @@ class InterventionActivity :
             object : OnBackPressedCallback(true) {
 
                 override fun handleOnBackPressed() {
+
                     /*
                      * Intentionally empty.
+                     *
+                     * Back cannot bypass the intervention.
                      */
                 }
             }
         )
 
+
+        /*
+         * Compose UI.
+         */
         setContent {
 
             DontscrollTheme {
 
                 InterventionScreen(
+
                     packageName =
                         packageName,
 
@@ -117,61 +187,92 @@ class InterventionActivity :
         }
     }
 
+
     /*
-     * User pressed Continue.
-     *
-     * The important order is:
-     *
-     * 1. Persist unlock.
-     * 2. Remove intervention task/window.
-     * 3. Launch protected app after the intervention
-     *    has been removed from the foreground.
+     * =========================================================
+     * CONTINUE
+     * =========================================================
      */
     private fun unlockAndOpenApp(
         packageName: String
     ) {
 
         /*
-         * Persist synchronously.
+         * IMPORTANT:
          *
-         * This guarantees the accessibility service can see
-         * the unlock before the protected app becomes
-         * foreground.
+         * Everything is committed BEFORE Instagram/YouTube/etc.
+         * is launched.
+         *
+         * This prevents the AccessibilityService from seeing
+         * the target app while intervention_active is still true.
          */
+        val now =
+            SystemClock.elapsedRealtime()
+
+
         val saved =
             getSharedPreferences(
                 PREFS_NAME,
                 Context.MODE_PRIVATE
             )
                 .edit()
+
+                /*
+                 * Explicitly unlock this package.
+                 */
                 .putString(
                     KEY_ALLOWED_PACKAGE,
                     packageName
                 )
+
+                /*
+                 * Intervention is now finished.
+                 */
+                .putBoolean(
+                    KEY_INTERVENTION_ACTIVE,
+                    false
+                )
+
+                /*
+                 * No active intervention package anymore.
+                 */
+                .remove(
+                    KEY_INTERVENTION_PACKAGE
+                )
+
+                /*
+                 * Remember intentional unlock.
+                 */
+                .putString(
+                    KEY_RECENT_UNLOCK_PACKAGE,
+                    packageName
+                )
+
+                .putLong(
+                    KEY_RECENT_UNLOCK_TIME,
+                    now
+                )
+
                 .commit()
 
+
+        /*
+         * Never launch the app if state couldn't be persisted.
+         */
         if (!saved) {
-            /*
-             * If the preference could not be persisted,
-             * do not launch the protected app.
-             */
             return
         }
 
+
         /*
-         * Remove this Activity/task first.
-         *
-         * This is intentional: we don't want the intervention
-         * window sitting underneath the Android clone-app
-         * resolver.
+         * Remove this Activity/task.
          */
         finishAndRemoveTask()
 
+
         /*
-         * Give Android one main-loop turn to destroy/remove
-         * the intervention window.
-         *
-         * Then launch the protected application.
+         * Give Android one main-loop turn to process the
+         * Activity removal.
          */
         Handler(
             Looper.getMainLooper()
@@ -183,6 +284,10 @@ class InterventionActivity :
         }
     }
 
+
+    /*
+     * Launch the protected application.
+     */
     private fun openBlockedApp(
         packageName: String
     ) {
@@ -193,19 +298,25 @@ class InterventionActivity :
                     packageName
                 )
 
-        if (launchIntent == null) {
+
+        /*
+         * No launcher Activity.
+         */
+        if (
+            launchIntent == null
+        ) {
             return
         }
 
+
         /*
-         * Explicitly launch the package's launcher activity.
-         *
-         * This avoids creating a generic implicit Intent.
+         * Explicitly launch the package.
          */
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP
         )
+
 
         try {
 
@@ -219,18 +330,32 @@ class InterventionActivity :
         }
     }
 
+
     override fun onPause() {
 
         super.onPause()
 
         /*
-         * Do not modify the countdown or unlock state here.
+         * DO NOT change intervention state here.
+         *
+         * onPause() can happen because of:
+         *
+         * - Recents
+         * - system dialogs
+         * - resolver
+         * - cloned-app UI
+         * - Activity transitions
+         *
+         * The intervention remains active until Continue.
          */
     }
 }
 
+
 /*
- * Intervention UI.
+ * ============================================================
+ * INTERVENTION UI
+ * ============================================================
  */
 @Composable
 fun InterventionScreen(
@@ -239,9 +364,14 @@ fun InterventionScreen(
     delaySeconds: Long,
     onUnlocked: () -> Unit
 ) {
+
     val context =
         LocalContext.current
 
+
+    /*
+     * Countdown.
+     */
     var remaining by remember {
 
         mutableLongStateOf(
@@ -249,15 +379,24 @@ fun InterventionScreen(
         )
     }
 
-    var screenTime by remember {
-
-        mutableLongStateOf(0L)
-    }
 
     /*
-     * Update today's screen time.
+     * Today's screen time.
      */
-    LaunchedEffect(packageName) {
+    var screenTime by remember {
+
+        mutableLongStateOf(
+            0L
+        )
+    }
+
+
+    /*
+     * Update screen time every second.
+     */
+    LaunchedEffect(
+        packageName
+    ) {
 
         while (true) {
 
@@ -268,9 +407,12 @@ fun InterventionScreen(
                         packageName
                     )
 
-            delay(1000L)
+            delay(
+                1000L
+            )
         }
     }
+
 
     /*
      * Countdown.
@@ -283,19 +425,28 @@ fun InterventionScreen(
         remaining =
             delaySeconds
 
-        while (remaining > 0L) {
 
-            delay(1000L)
+        while (
+            remaining > 0L
+        ) {
+
+            delay(
+                1000L
+            )
 
             remaining--
         }
     }
 
+
     Column(
+
         modifier =
             Modifier
                 .fillMaxSize()
-                .padding(32.dp),
+                .padding(
+                    32.dp
+                ),
 
         horizontalAlignment =
             Alignment.CenterHorizontally,
@@ -305,6 +456,7 @@ fun InterventionScreen(
     ) {
 
         Text(
+
             text =
                 "DON'T SCROLL",
 
@@ -319,11 +471,16 @@ fun InterventionScreen(
                     .primary
         )
 
+
         Spacer(
-            Modifier.height(24.dp)
+            Modifier.height(
+                24.dp
+            )
         )
 
+
         Text(
+
             text =
                 displayName,
 
@@ -333,20 +490,29 @@ fun InterventionScreen(
                     .headlineMedium
         )
 
+
         Spacer(
-            Modifier.height(32.dp)
+            Modifier.height(
+                32.dp
+            )
         )
+
 
         Text(
             text =
                 "Screen time today"
         )
 
+
         Spacer(
-            Modifier.height(8.dp)
+            Modifier.height(
+                8.dp
+            )
         )
 
+
         Text(
+
             text =
                 ScreenTimeManager
                     .formatDuration(
@@ -359,22 +525,33 @@ fun InterventionScreen(
                     .headlineSmall
         )
 
+
         Spacer(
-            Modifier.height(40.dp)
+            Modifier.height(
+                40.dp
+            )
         )
 
-        if (remaining > 0L) {
+
+        if (
+            remaining > 0L
+        ) {
 
             Text(
                 text =
                     "Wait before opening"
             )
 
+
             Spacer(
-                Modifier.height(12.dp)
+                Modifier.height(
+                    12.dp
+                )
             )
 
+
             Text(
+
                 text =
                     formatCountdown(
                         remaining
@@ -386,11 +563,16 @@ fun InterventionScreen(
                         .displayMedium
             )
 
+
             Spacer(
-                Modifier.height(16.dp)
+                Modifier.height(
+                    16.dp
+                )
             )
 
+
             Text(
+
                 text =
                     "You have to wait before " +
                             "continuing."
@@ -399,6 +581,7 @@ fun InterventionScreen(
         } else {
 
             Text(
+
                 text =
                     "You waited.",
 
@@ -408,11 +591,16 @@ fun InterventionScreen(
                         .headlineSmall
             )
 
+
             Spacer(
-                Modifier.height(24.dp)
+                Modifier.height(
+                    24.dp
+                )
             )
 
+
             Button(
+
                 onClick =
                     onUnlocked
             ) {
@@ -426,8 +614,11 @@ fun InterventionScreen(
     }
 }
 
+
 /*
- * Formats seconds as HH:MM:SS.
+ * ============================================================
+ * COUNTDOWN FORMATTER
+ * ============================================================
  */
 fun formatCountdown(
     seconds: Long
@@ -436,11 +627,14 @@ fun formatCountdown(
     val hours =
         seconds / 3600L
 
+
     val minutes =
         (seconds % 3600L) / 60L
 
+
     val secs =
         seconds % 60L
+
 
     return String.format(
         Locale.US,
