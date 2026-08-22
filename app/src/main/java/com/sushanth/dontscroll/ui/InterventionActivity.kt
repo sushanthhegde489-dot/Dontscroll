@@ -5,33 +5,52 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import androidx.compose.foundation.background
+
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+
+import androidx.core.graphics.drawable.toBitmap
+
 import com.sushanth.dontscroll.ui.theme.DontscrollTheme
 import com.sushanth.dontscroll.util.ScreenTimeManager
+
 import kotlinx.coroutines.delay
+
 import java.util.Locale
-import android.os.SystemClock
+
 
 class InterventionActivity :
     ComponentActivity() {
@@ -73,6 +92,40 @@ class InterventionActivity :
     }
 
 
+    /*
+     * =========================================================
+     * COMPOSE-OBSERVABLE STATE
+     * =========================================================
+     *
+     * FIX:
+     *
+     * These were previously plain `var`s. Because the activity
+     * is launched with FLAG_ACTIVITY_SINGLE_TOP, opening a
+     * SECOND blocked app while an intervention screen is
+     * already showing reuses this SAME activity instance via
+     * onNewIntent() instead of creating a new one.
+     *
+     * onNewIntent() updated the old plain vars correctly, but
+     * setContent { ... } only runs once in onCreate(), so the
+     * UI never recomposed - it kept showing the FIRST app's
+     * timer forever.
+     *
+     * Making these mutableStateOf means Compose automatically
+     * recomposes InterventionScreen (and restarts its
+     * LaunchedEffect timers, since they're keyed on these
+     * values) whenever onNewIntent() updates them.
+     */
+
+    private var currentPackageName by
+    mutableStateOf<String?>(null)
+
+    private var currentDisplayName by
+    mutableStateOf("This app")
+
+    private var currentDelaySeconds by
+    mutableLongStateOf(15L * 60L)
+
+
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
@@ -82,47 +135,178 @@ class InterventionActivity :
         )
 
 
-        /*
-         * Get protected package.
-         */
+        if (
+            !readIntent(intent)
+        ) {
+
+            finish()
+
+            return
+        }
+
+
+        markInterventionActive(
+            currentPackageName!!
+        )
+
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+
+                override fun handleOnBackPressed() {
+                    // Back intentionally disabled.
+                }
+            }
+        )
+
+
+        setContent {
+
+            DontscrollTheme {
+
+                InterventionScreen(
+
+                    packageName =
+                        currentPackageName!!,
+
+                    displayName =
+                        currentDisplayName,
+
+                    delaySeconds =
+                        currentDelaySeconds,
+
+                    onUnlocked = {
+
+                        unlockAndOpenApp(
+                            currentPackageName!!
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+
+    override fun onNewIntent(
+        intent: Intent?
+    ) {
+
+        super.onNewIntent(
+            intent
+        )
+
+
+        if (
+            intent == null
+        ) {
+
+            return
+        }
+
+
+        if (
+            readIntent(intent)
+        ) {
+
+            currentPackageName?.let {
+
+                markInterventionActive(
+                    it
+                )
+            }
+        }
+    }
+
+
+    /*
+     * =========================================================
+     * READ INTENT
+     * =========================================================
+     */
+
+    private fun readIntent(
+        intent: Intent
+    ): Boolean {
+
         val packageName =
             intent.getStringExtra(
                 EXTRA_PACKAGE_NAME
-            ) ?: run {
-
-                finish()
-
-                return
-            }
+            )
 
 
-        /*
-         * Get display name.
-         */
+        if (
+            packageName.isNullOrBlank()
+        ) {
+
+            return false
+        }
+
+
         val displayName =
             intent.getStringExtra(
                 EXTRA_DISPLAY_NAME
             ) ?: "This app"
 
 
-        /*
-         * Get configured delay.
-         */
         val delaySeconds =
-            intent.getLongExtra(
-                EXTRA_DELAY_SECONDS,
-                30L
-            )
+            if (
+                intent.hasExtra(
+                    EXTRA_DELAY_SECONDS
+                )
+            ) {
+
+                intent.getLongExtra(
+                    EXTRA_DELAY_SECONDS,
+                    900L
+                )
+
+            } else {
+
+                900L
+            }
+
+
+        if (
+            delaySeconds <= 0L
+        ) {
+
+            return false
+        }
 
 
         /*
-         * =====================================================
-         * MARK INTERVENTION ACTIVE
-         * =====================================================
-         *
-         * Do this every time the intervention Activity is
-         * created/reused for a protected package.
+         * Assigning to these mutableStateOf-backed properties
+         * is what triggers recomposition, whether this is the
+         * first call (from onCreate) or a later one (from
+         * onNewIntent when a different app was opened while
+         * this activity was still alive).
          */
+
+        currentPackageName =
+            packageName
+
+        currentDisplayName =
+            displayName
+
+        currentDelaySeconds =
+            delaySeconds
+
+
+        return true
+    }
+
+
+    /*
+     * =========================================================
+     * INTERVENTION ACTIVE
+     * =========================================================
+     */
+
+    private fun markInterventionActive(
+        packageName: String
+    ) {
+
         getSharedPreferences(
             PREFS_NAME,
             Context.MODE_PRIVATE
@@ -137,75 +321,19 @@ class InterventionActivity :
                 packageName
             )
             .commit()
-
-
-        /*
-         * Completely disable Back.
-         */
-        onBackPressedDispatcher.addCallback(
-            this,
-            object : OnBackPressedCallback(true) {
-
-                override fun handleOnBackPressed() {
-
-                    /*
-                     * Intentionally empty.
-                     *
-                     * Back cannot bypass the intervention.
-                     */
-                }
-            }
-        )
-
-
-        /*
-         * Compose UI.
-         */
-        setContent {
-
-            DontscrollTheme {
-
-                InterventionScreen(
-
-                    packageName =
-                        packageName,
-
-                    displayName =
-                        displayName,
-
-                    delaySeconds =
-                        delaySeconds,
-
-                    onUnlocked = {
-
-                        unlockAndOpenApp(
-                            packageName
-                        )
-                    }
-                )
-            }
-        }
     }
 
 
     /*
      * =========================================================
-     * CONTINUE
+     * UNLOCK
      * =========================================================
      */
+
     private fun unlockAndOpenApp(
         packageName: String
     ) {
 
-        /*
-         * IMPORTANT:
-         *
-         * Everything is committed BEFORE Instagram/YouTube/etc.
-         * is launched.
-         *
-         * This prevents the AccessibilityService from seeing
-         * the target app while intervention_active is still true.
-         */
         val now =
             SystemClock.elapsedRealtime()
 
@@ -217,32 +345,20 @@ class InterventionActivity :
             )
                 .edit()
 
-                /*
-                 * Explicitly unlock this package.
-                 */
                 .putString(
                     KEY_ALLOWED_PACKAGE,
                     packageName
                 )
 
-                /*
-                 * Intervention is now finished.
-                 */
                 .putBoolean(
                     KEY_INTERVENTION_ACTIVE,
                     false
                 )
 
-                /*
-                 * No active intervention package anymore.
-                 */
                 .remove(
                     KEY_INTERVENTION_PACKAGE
                 )
 
-                /*
-                 * Remember intentional unlock.
-                 */
                 .putString(
                     KEY_RECENT_UNLOCK_PACKAGE,
                     packageName
@@ -256,24 +372,15 @@ class InterventionActivity :
                 .commit()
 
 
-        /*
-         * Never launch the app if state couldn't be persisted.
-         */
         if (!saved) {
+
             return
         }
 
 
-        /*
-         * Remove this Activity/task.
-         */
         finishAndRemoveTask()
 
 
-        /*
-         * Give Android one main-loop turn to process the
-         * Activity removal.
-         */
         Handler(
             Looper.getMainLooper()
         ).post {
@@ -286,8 +393,11 @@ class InterventionActivity :
 
 
     /*
-     * Launch the protected application.
+     * =========================================================
+     * OPEN APP
+     * =========================================================
      */
+
     private fun openBlockedApp(
         packageName: String
     ) {
@@ -299,19 +409,14 @@ class InterventionActivity :
                 )
 
 
-        /*
-         * No launcher Activity.
-         */
         if (
             launchIntent == null
         ) {
+
             return
         }
 
 
-        /*
-         * Explicitly launch the package.
-         */
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -336,17 +441,8 @@ class InterventionActivity :
         super.onPause()
 
         /*
-         * DO NOT change intervention state here.
-         *
-         * onPause() can happen because of:
-         *
-         * - Recents
-         * - system dialogs
-         * - resolver
-         * - cloned-app UI
-         * - Activity transitions
-         *
-         * The intervention remains active until Continue.
+         * Intervention remains active
+         * until Continue is pressed.
          */
     }
 }
@@ -357,6 +453,7 @@ class InterventionActivity :
  * INTERVENTION UI
  * ============================================================
  */
+
 @Composable
 fun InterventionScreen(
     packageName: String,
@@ -368,32 +465,26 @@ fun InterventionScreen(
     val context =
         LocalContext.current
 
-
-    /*
-     * Countdown.
-     */
-    var remaining by remember {
-
+    var remaining by remember(
+        packageName,
+        delaySeconds
+    ) {
         mutableLongStateOf(
             delaySeconds
         )
     }
 
-
-    /*
-     * Today's screen time.
-     */
     var screenTime by remember {
-
-        mutableLongStateOf(
-            0L
-        )
+        mutableLongStateOf(0L)
     }
 
 
     /*
-     * Update screen time every second.
+     * ========================================================
+     * SCREEN TIME
+     * ========================================================
      */
+
     LaunchedEffect(
         packageName
     ) {
@@ -407,209 +498,378 @@ fun InterventionScreen(
                         packageName
                     )
 
-            delay(
-                1000L
-            )
+            delay(1000L)
         }
     }
 
 
     /*
-     * Countdown.
+     * ========================================================
+     * COUNTDOWN
+     * ========================================================
+     *
+     * Keyed on (packageName, delaySeconds), so this timer
+     * automatically restarts whenever the activity is reused
+     * for a different blocked app.
+     * ========================================================
      */
+
     LaunchedEffect(
         packageName,
         delaySeconds
     ) {
 
-        remaining =
-            delaySeconds
+        val endTime =
+            SystemClock.elapsedRealtime() +
+                    delaySeconds * 1000L
 
+        while (true) {
 
-        while (
-            remaining > 0L
-        ) {
+            val millisRemaining =
+                endTime -
+                        SystemClock.elapsedRealtime()
 
-            delay(
-                1000L
-            )
+            if (
+                millisRemaining <= 0L
+            ) {
 
-            remaining--
+                remaining = 0L
+
+                break
+            }
+
+            remaining =
+                (
+                        millisRemaining +
+                                999L
+                        ) / 1000L
+
+            delay(100L)
         }
     }
 
+
+    val isReady =
+        remaining <= 0L
+
+
+    val colors =
+        MaterialTheme.colorScheme
+
+
+    /*
+     * ========================================================
+     * SCREEN
+     * ========================================================
+     */
 
     Column(
 
         modifier =
             Modifier
                 .fillMaxSize()
+                .background(
+                    colors.background
+                )
                 .padding(
-                    32.dp
+                    horizontal = 28.dp,
+                    vertical = 48.dp
                 ),
 
         horizontalAlignment =
             Alignment.CenterHorizontally,
 
         verticalArrangement =
-            Arrangement.Center
+            Arrangement.SpaceBetween
     ) {
 
-        Text(
 
-            text =
-                "DON'T SCROLL",
+        /*
+         * ====================================================
+         * HEADER
+         * ====================================================
+         */
 
-            style =
-                MaterialTheme
-                    .typography
-                    .headlineLarge,
+        Column(
 
-            color =
-                MaterialTheme
-                    .colorScheme
-                    .primary
-        )
-
-
-        Spacer(
-            Modifier.height(
-                24.dp
-            )
-        )
-
-
-        Text(
-
-            text =
-                displayName,
-
-            style =
-                MaterialTheme
-                    .typography
-                    .headlineMedium
-        )
-
-
-        Spacer(
-            Modifier.height(
-                32.dp
-            )
-        )
-
-
-        Text(
-            text =
-                "Screen time today"
-        )
-
-
-        Spacer(
-            Modifier.height(
-                8.dp
-            )
-        )
-
-
-        Text(
-
-            text =
-                ScreenTimeManager
-                    .formatDuration(
-                        screenTime
-                    ),
-
-            style =
-                MaterialTheme
-                    .typography
-                    .headlineSmall
-        )
-
-
-        Spacer(
-            Modifier.height(
-                40.dp
-            )
-        )
-
-
-        if (
-            remaining > 0L
+            horizontalAlignment =
+                Alignment.CenterHorizontally
         ) {
 
+            Spacer(
+                modifier =
+                    Modifier.height(18.dp)
+            )
+
             Text(
+
                 text =
-                    "Wait before opening"
+                    "DONTSCROLL",
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .headlineMedium,
+
+                color =
+                    colors.onBackground,
+
+                textAlign =
+                    TextAlign.Center
+            )
+        }
+
+
+        /*
+         * ====================================================
+         * MAIN CONTENT
+         * ====================================================
+         */
+
+        Column(
+
+            horizontalAlignment =
+                Alignment.CenterHorizontally
+        ) {
+
+
+            /*
+             * APP NAME
+             */
+
+            Text(
+
+                text =
+                    displayName,
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleLarge,
+
+                color =
+                    colors.onBackground,
+
+                textAlign =
+                    TextAlign.Center
             )
 
 
             Spacer(
-                Modifier.height(
-                    12.dp
-                )
+                modifier =
+                    Modifier.height(28.dp)
+            )
+
+
+            /*
+             * TIMER
+             */
+
+            Text(
+
+                text =
+                    if (isReady)
+                        "00:00:00"
+                    else
+                        formatCountdown(
+                            remaining
+                        ),
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .displayLarge,
+
+                color =
+                    colors.primary,
+
+                textAlign =
+                    TextAlign.Center
+            )
+
+
+            Spacer(
+                modifier =
+                    Modifier.height(10.dp)
             )
 
 
             Text(
 
                 text =
-                    formatCountdown(
-                        remaining
+                    if (isReady)
+                        "Your pause is over."
+                    else
+                        "Take a breath before you open it.",
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodyLarge,
+
+                color =
+                    colors.onSurfaceVariant,
+
+                textAlign =
+                    TextAlign.Center
+            )
+
+
+            Spacer(
+                modifier =
+                    Modifier.height(30.dp)
+            )
+
+
+            /*
+             * =================================================
+             * SCREEN TIME CARD
+             * =================================================
+             */
+
+            Card(
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                shape =
+                    RoundedCornerShape(
+                        20.dp
                     ),
 
-                style =
-                    MaterialTheme
-                        .typography
-                        .displayMedium
-            )
+                colors =
+                    CardDefaults.cardColors(
+
+                        containerColor =
+                            colors.surfaceContainer
+                    )
+            ) {
+
+                Column(
+
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 28.dp,
+                                vertical = 18.dp
+                            ),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally
+                ) {
+
+                    Text(
+
+                        text =
+                            "TODAY",
+
+                        style =
+                            MaterialTheme
+                                .typography
+                                .labelSmall,
+
+                        color =
+                            colors.onSurfaceVariant
+                    )
 
 
-            Spacer(
-                Modifier.height(
-                    16.dp
-                )
-            )
+                    Spacer(
+                        modifier =
+                            Modifier.height(4.dp)
+                    )
 
 
-            Text(
+                    Text(
 
-                text =
-                    "You have to wait before " +
-                            "continuing."
-            )
+                        text =
+                            ScreenTimeManager
+                                .formatDuration(
+                                    screenTime
+                                ),
 
-        } else {
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleLarge,
 
-            Text(
-
-                text =
-                    "You waited.",
-
-                style =
-                    MaterialTheme
-                        .typography
-                        .headlineSmall
-            )
+                        color =
+                            colors.secondary
+                    )
 
 
-            Spacer(
-                Modifier.height(
-                    24.dp
-                )
-            )
+                    Text(
 
+                        text =
+                            "screen time",
+
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+
+                        color =
+                            colors.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ====================================================
+         * BOTTOM
+         * ====================================================
+         */
+
+        Column(
+
+            horizontalAlignment =
+                Alignment.CenterHorizontally
+        ) {
 
             Button(
 
                 onClick =
-                    onUnlocked
+                    onUnlocked,
+
+                enabled =
+                    isReady,
+
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(60.dp),
+
+                shape =
+                    RoundedCornerShape(
+                        20.dp
+                    )
             ) {
 
                 Text(
+
                     text =
-                        "Continue"
+                        if (isReady)
+                            "Continue to $displayName"
+                        else
+                            "Wait " +
+                                    formatCountdown(
+                                        remaining
+                                    ),
+
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleMedium
                 )
             }
+
+
+            Spacer(
+                modifier =
+                    Modifier.height(12.dp)
+            )
         }
     }
 }
@@ -620,6 +880,7 @@ fun InterventionScreen(
  * COUNTDOWN FORMATTER
  * ============================================================
  */
+
 fun formatCountdown(
     seconds: Long
 ): String {

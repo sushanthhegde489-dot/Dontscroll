@@ -66,7 +66,77 @@ object ScreenTimeManager {
      * This method first checks the special Usage Access
      * setting. If the user has not enabled it, an empty
      * list is returned.
+     *
+     * Resets at midnight and shows only foreground usage.
      */
+    /*fun getTodayUsage(
+        context: Context
+    ): List<AppUsage> {
+
+        if (!hasUsageAccess(context)) {
+            return emptyList()
+        }
+
+        val usageStatsManager =
+            context.getSystemService(
+                Context.USAGE_STATS_SERVICE
+            ) as UsageStatsManager
+
+        val calendar =
+            Calendar.getInstance()
+
+        calendar.set(
+            Calendar.HOUR_OF_DAY,
+            0
+        )
+
+        calendar.set(
+            Calendar.MINUTE,
+            0
+        )
+
+        calendar.set(
+            Calendar.SECOND,
+            0
+        )
+
+        calendar.set(
+            Calendar.MILLISECOND,
+            0
+        )
+
+        val startTime =
+            calendar.timeInMillis
+
+        val endTime =
+            System.currentTimeMillis()
+
+        val stats =
+            queryUsageStats(
+                usageStatsManager,
+                startTime,
+                endTime
+            )
+
+        return stats
+            .asSequence()
+            .filter {
+                it.totalTimeInForeground > 0L
+            }
+            .sortByDescending {
+                it.totalTimeInForeground
+            }
+            .map {
+                AppUsage(
+                    packageName =
+                        it.packageName,
+
+                    totalTimeMillis =
+                        it.totalTimeInForeground
+                )
+            }
+            .toList()
+    }*/
     fun getTodayUsage(
         context: Context
     ): List<AppUsage> {
@@ -121,6 +191,9 @@ object ScreenTimeManager {
             .filter {
                 it.totalTimeInForeground > 0L
             }
+            .sortedByDescending {
+                it.totalTimeInForeground
+            }
             .map {
                 AppUsage(
                     packageName =
@@ -132,7 +205,6 @@ object ScreenTimeManager {
             }
             .toList()
     }
-
     /**
      * Android's UsageStats API is protected by the
      * special Usage Access setting.
