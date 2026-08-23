@@ -1,17 +1,14 @@
 package com.sushanth.dontscroll.ui
 
-import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
-import androidx.compose.foundation.background
 
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-
 import androidx.compose.foundation.shape.RoundedCornerShape
 
 import androidx.compose.material3.Button
@@ -42,8 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-import androidx.core.graphics.drawable.toBitmap
-
+import com.sushanth.dontscroll.service.DoomGuardAccessibilityService
 import com.sushanth.dontscroll.ui.theme.DontscrollTheme
 import com.sushanth.dontscroll.util.ScreenTimeManager
 
@@ -52,8 +47,7 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 
 
-class InterventionActivity :
-    ComponentActivity() {
+class InterventionActivity : ComponentActivity() {
 
     companion object {
 
@@ -66,123 +60,78 @@ class InterventionActivity :
         const val EXTRA_DELAY_SECONDS =
             "delay_seconds"
 
-
-        private const val PREFS_NAME =
-            "dontscroll_intervention"
-
-
-        private const val KEY_ALLOWED_PACKAGE =
-            "allowed_package"
-
-
-        private const val KEY_INTERVENTION_ACTIVE =
-            "intervention_active"
-
-
-        private const val KEY_INTERVENTION_PACKAGE =
-            "intervention_package"
-
-
-        private const val KEY_RECENT_UNLOCK_PACKAGE =
-            "recent_unlock_package"
-
-
-        private const val KEY_RECENT_UNLOCK_TIME =
-            "recent_unlock_time"
+        private const val UNLOCK_DURATION_MILLIS =
+            5_000L
     }
 
 
-    /*
-     * =========================================================
-     * COMPOSE-OBSERVABLE STATE
-     * =========================================================
-     *
-     * FIX:
-     *
-     * These were previously plain `var`s. Because the activity
-     * is launched with FLAG_ACTIVITY_SINGLE_TOP, opening a
-     * SECOND blocked app while an intervention screen is
-     * already showing reuses this SAME activity instance via
-     * onNewIntent() instead of creating a new one.
-     *
-     * onNewIntent() updated the old plain vars correctly, but
-     * setContent { ... } only runs once in onCreate(), so the
-     * UI never recomposed - it kept showing the FIRST app's
-     * timer forever.
-     *
-     * Making these mutableStateOf means Compose automatically
-     * recomposes InterventionScreen (and restarts its
-     * LaunchedEffect timers, since they're keyed on these
-     * values) whenever onNewIntent() updates them.
-     */
+    private var targetPackageName: String? by
+    mutableStateOf(null)
 
-    private var currentPackageName by
-    mutableStateOf<String?>(null)
-
-    private var currentDisplayName by
+    private var displayName: String by
     mutableStateOf("This app")
 
-    private var currentDelaySeconds by
-    mutableLongStateOf(15L * 60L)
+    private var delaySeconds: Long by
+    mutableLongStateOf(900L)
+
+    private var isUnlocking: Boolean by
+    mutableStateOf(false)
 
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
 
-        super.onCreate(
-            savedInstanceState
-        )
+        super.onCreate(savedInstanceState)
 
-
-        if (
-            !readIntent(intent)
-        ) {
-
+        if (!readIntent(intent)) {
             finish()
-
             return
         }
-
-
-        markInterventionActive(
-            currentPackageName!!
-        )
-
 
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
 
                 override fun handleOnBackPressed() {
-                    // Back intentionally disabled.
+                    /*
+                     * Intentionally disabled.
+                     */
                 }
             }
         )
-
 
         setContent {
 
             DontscrollTheme {
 
-                InterventionScreen(
+                val currentPackage =
+                    targetPackageName
 
-                    packageName =
-                        currentPackageName!!,
+                if (currentPackage != null) {
 
-                    displayName =
-                        currentDisplayName,
+                    InterventionScreen(
 
-                    delaySeconds =
-                        currentDelaySeconds,
+                        packageName =
+                            currentPackage,
 
-                    onUnlocked = {
+                        displayName =
+                            displayName,
 
-                        unlockAndOpenApp(
-                            currentPackageName!!
-                        )
-                    }
-                )
+                        delaySeconds =
+                            delaySeconds,
+
+                        isUnlocking =
+                            isUnlocking,
+
+                        onUnlocked = {
+
+                            unlockAndOpenApp(
+                                currentPackage
+                            )
+                        }
+                    )
+                }
             }
         }
     }
@@ -192,226 +141,146 @@ class InterventionActivity :
         intent: Intent?
     ) {
 
-        super.onNewIntent(
-            intent
-        )
+        super.onNewIntent(intent)
 
-
-        if (
-            intent == null
-        ) {
-
+        if (intent == null) {
             return
         }
 
+        setIntent(intent)
 
-        if (
-            readIntent(intent)
-        ) {
-
-            currentPackageName?.let {
-
-                markInterventionActive(
-                    it
-                )
-            }
+        if (isUnlocking) {
+            return
         }
+
+        readIntent(intent)
     }
 
-
-    /*
-     * =========================================================
-     * READ INTENT
-     * =========================================================
-     */
 
     private fun readIntent(
         intent: Intent
     ): Boolean {
 
-        val packageName =
+        val incomingPackage =
             intent.getStringExtra(
                 EXTRA_PACKAGE_NAME
             )
 
-
-        if (
-            packageName.isNullOrBlank()
-        ) {
-
+        if (incomingPackage.isNullOrBlank()) {
             return false
         }
 
-
-        val displayName =
-            intent.getStringExtra(
-                EXTRA_DISPLAY_NAME
-            ) ?: "This app"
-
-
-        val delaySeconds =
-            if (
-                intent.hasExtra(
-                    EXTRA_DELAY_SECONDS
+        val incomingDisplayName =
+            intent
+                .getStringExtra(
+                    EXTRA_DISPLAY_NAME
                 )
-            ) {
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+                ?: "This app"
 
-                intent.getLongExtra(
-                    EXTRA_DELAY_SECONDS,
-                    900L
-                )
-
-            } else {
-
+        val incomingDelay =
+            intent.getLongExtra(
+                EXTRA_DELAY_SECONDS,
                 900L
-            }
+            )
 
-
-        if (
-            delaySeconds <= 0L
-        ) {
-
+        if (incomingDelay <= 0L) {
             return false
         }
 
+        targetPackageName =
+            incomingPackage
 
-        /*
-         * Assigning to these mutableStateOf-backed properties
-         * is what triggers recomposition, whether this is the
-         * first call (from onCreate) or a later one (from
-         * onNewIntent when a different app was opened while
-         * this activity was still alive).
-         */
+        displayName =
+            incomingDisplayName
 
-        currentPackageName =
-            packageName
+        delaySeconds =
+            incomingDelay
 
-        currentDisplayName =
-            displayName
-
-        currentDelaySeconds =
-            delaySeconds
-
+        isUnlocking =
+            false
 
         return true
     }
 
 
-    /*
-     * =========================================================
-     * INTERVENTION ACTIVE
-     * =========================================================
-     */
-
-    private fun markInterventionActive(
-        packageName: String
-    ) {
-
-        getSharedPreferences(
-            PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-            .edit()
-            .putBoolean(
-                KEY_INTERVENTION_ACTIVE,
-                true
-            )
-            .putString(
-                KEY_INTERVENTION_PACKAGE,
-                packageName
-            )
-            .commit()
-    }
-
-
-    /*
-     * =========================================================
-     * UNLOCK
-     * =========================================================
-     */
-
     private fun unlockAndOpenApp(
-        packageName: String
+        targetPackage: String
     ) {
 
-        val now =
-            SystemClock.elapsedRealtime()
+        if (isUnlocking) {
+            return
+        }
 
+        /*
+         * If blocking was turned off or a break was started
+         * while this screen was open, do not create another
+         * intervention state.
+         */
 
-        val saved =
-            getSharedPreferences(
-                PREFS_NAME,
-                Context.MODE_PRIVATE
-            )
-                .edit()
-
-                .putString(
-                    KEY_ALLOWED_PACKAGE,
-                    packageName
+        if (
+            !DoomGuardAccessibilityService
+                .shouldBlock(
+                    this,
+                    targetPackage
                 )
+        ) {
 
-                .putBoolean(
-                    KEY_INTERVENTION_ACTIVE,
-                    false
-                )
+            val intent =
+                packageManager
+                    .getLaunchIntentForPackage(
+                        targetPackage
+                    )
 
-                .remove(
-                    KEY_INTERVENTION_PACKAGE
-                )
+            if (intent != null) {
 
-                .putString(
-                    KEY_RECENT_UNLOCK_PACKAGE,
-                    packageName
-                )
+                try {
 
-                .putLong(
-                    KEY_RECENT_UNLOCK_TIME,
-                    now
-                )
+                    intent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    )
 
-                .commit()
+                    startActivity(intent)
 
+                } catch (
+                    exception: Exception
+                ) {
 
-        if (!saved) {
+                    exception.printStackTrace()
+                }
+            }
+
+            finishAndRemoveTask()
 
             return
         }
 
+        isUnlocking =
+            true
 
-        finishAndRemoveTask()
 
-
-        Handler(
-            Looper.getMainLooper()
-        ).post {
-
-            openBlockedApp(
-                packageName
+        DoomGuardAccessibilityService
+            .completeIntervention(
+                context = this,
+                packageName = targetPackage,
+                durationMillis =
+                    UNLOCK_DURATION_MILLIS
             )
-        }
-    }
 
-
-    /*
-     * =========================================================
-     * OPEN APP
-     * =========================================================
-     */
-
-    private fun openBlockedApp(
-        packageName: String
-    ) {
 
         val launchIntent =
             packageManager
                 .getLaunchIntentForPackage(
-                    packageName
+                    targetPackage
                 )
 
+        if (launchIntent == null) {
 
-        if (
-            launchIntent == null
-        ) {
+            isUnlocking =
+                false
 
             return
         }
@@ -425,13 +294,25 @@ class InterventionActivity :
 
         try {
 
+            DoomGuardAccessibilityService
+                .prepareForTargetAppReturn(
+                    targetPackage
+                )
+
             startActivity(
                 launchIntent
             )
 
-        } catch (e: Exception) {
+            finishAndRemoveTask()
 
-            e.printStackTrace()
+        } catch (
+            exception: Exception
+        ) {
+
+            exception.printStackTrace()
+
+            isUnlocking =
+                false
         }
     }
 
@@ -441,8 +322,7 @@ class InterventionActivity :
         super.onPause()
 
         /*
-         * Intervention remains active
-         * until Continue is pressed.
+         * Service owns intervention state.
          */
     }
 }
@@ -450,32 +330,47 @@ class InterventionActivity :
 
 /*
  * ============================================================
- * INTERVENTION UI
+ * INTERVENTION SCREEN
  * ============================================================
  */
 
 @Composable
 fun InterventionScreen(
+
     packageName: String,
+
     displayName: String,
+
     delaySeconds: Long,
+
+    isUnlocking: Boolean,
+
     onUnlocked: () -> Unit
+
 ) {
 
     val context =
         LocalContext.current
 
-    var remaining by remember(
+    var remaining by
+    remember(
         packageName,
         delaySeconds
     ) {
+
         mutableLongStateOf(
             delaySeconds
         )
     }
 
-    var screenTime by remember {
-        mutableLongStateOf(0L)
+    var screenTime by
+    remember(
+        packageName
+    ) {
+
+        mutableLongStateOf(
+            0L
+        )
     }
 
 
@@ -485,9 +380,7 @@ fun InterventionScreen(
      * ========================================================
      */
 
-    LaunchedEffect(
-        packageName
-    ) {
+    LaunchedEffect(packageName) {
 
         while (true) {
 
@@ -498,7 +391,7 @@ fun InterventionScreen(
                         packageName
                     )
 
-            delay(1000L)
+            delay(1_000L)
         }
     }
 
@@ -506,11 +399,6 @@ fun InterventionScreen(
     /*
      * ========================================================
      * COUNTDOWN
-     * ========================================================
-     *
-     * Keyed on (packageName, delaySeconds), so this timer
-     * automatically restarts whenever the activity is reused
-     * for a different blocked app.
      * ========================================================
      */
 
@@ -521,7 +409,7 @@ fun InterventionScreen(
 
         val endTime =
             SystemClock.elapsedRealtime() +
-                    delaySeconds * 1000L
+                    delaySeconds * 1_000L
 
         while (true) {
 
@@ -529,11 +417,10 @@ fun InterventionScreen(
                 endTime -
                         SystemClock.elapsedRealtime()
 
-            if (
-                millisRemaining <= 0L
-            ) {
+            if (millisRemaining <= 0L) {
 
-                remaining = 0L
+                remaining =
+                    0L
 
                 break
             }
@@ -542,7 +429,7 @@ fun InterventionScreen(
                 (
                         millisRemaining +
                                 999L
-                        ) / 1000L
+                        ) / 1_000L
 
             delay(100L)
         }
@@ -552,16 +439,9 @@ fun InterventionScreen(
     val isReady =
         remaining <= 0L
 
-
     val colors =
         MaterialTheme.colorScheme
 
-
-    /*
-     * ========================================================
-     * SCREEN
-     * ========================================================
-     */
 
     Column(
 
@@ -583,15 +463,7 @@ fun InterventionScreen(
             Arrangement.SpaceBetween
     ) {
 
-
-        /*
-         * ====================================================
-         * HEADER
-         * ====================================================
-         */
-
         Column(
-
             horizontalAlignment =
                 Alignment.CenterHorizontally
         ) {
@@ -620,22 +492,10 @@ fun InterventionScreen(
         }
 
 
-        /*
-         * ====================================================
-         * MAIN CONTENT
-         * ====================================================
-         */
-
         Column(
-
             horizontalAlignment =
                 Alignment.CenterHorizontally
         ) {
-
-
-            /*
-             * APP NAME
-             */
 
             Text(
 
@@ -654,26 +514,21 @@ fun InterventionScreen(
                     TextAlign.Center
             )
 
-
             Spacer(
                 modifier =
                     Modifier.height(28.dp)
             )
 
-
-            /*
-             * TIMER
-             */
-
             Text(
 
                 text =
-                    if (isReady)
+                    if (isReady) {
                         "00:00:00"
-                    else
+                    } else {
                         formatCountdown(
                             remaining
-                        ),
+                        )
+                    },
 
                 style =
                     MaterialTheme
@@ -687,20 +542,25 @@ fun InterventionScreen(
                     TextAlign.Center
             )
 
-
             Spacer(
                 modifier =
                     Modifier.height(10.dp)
             )
 
-
             Text(
 
                 text =
-                    if (isReady)
-                        "Your pause is over."
-                    else
-                        "Take a breath before you open it.",
+                    when {
+
+                        isUnlocking ->
+                            "Opening $displayName…"
+
+                        isReady ->
+                            "Your pause is over."
+
+                        else ->
+                            "Take a breath before you open it."
+                    },
 
                 style =
                     MaterialTheme
@@ -714,18 +574,10 @@ fun InterventionScreen(
                     TextAlign.Center
             )
 
-
             Spacer(
                 modifier =
                     Modifier.height(30.dp)
             )
-
-
-            /*
-             * =================================================
-             * SCREEN TIME CARD
-             * =================================================
-             */
 
             Card(
 
@@ -733,13 +585,10 @@ fun InterventionScreen(
                     Modifier.fillMaxWidth(),
 
                 shape =
-                    RoundedCornerShape(
-                        20.dp
-                    ),
+                    RoundedCornerShape(20.dp),
 
                 colors =
                     CardDefaults.cardColors(
-
                         containerColor =
                             colors.surfaceContainer
                     )
@@ -773,12 +622,10 @@ fun InterventionScreen(
                             colors.onSurfaceVariant
                     )
 
-
                     Spacer(
                         modifier =
                             Modifier.height(4.dp)
                     )
-
 
                     Text(
 
@@ -796,7 +643,6 @@ fun InterventionScreen(
                         color =
                             colors.secondary
                     )
-
 
                     Text(
 
@@ -816,14 +662,7 @@ fun InterventionScreen(
         }
 
 
-        /*
-         * ====================================================
-         * BOTTOM
-         * ====================================================
-         */
-
         Column(
-
             horizontalAlignment =
                 Alignment.CenterHorizontally
         ) {
@@ -834,7 +673,8 @@ fun InterventionScreen(
                     onUnlocked,
 
                 enabled =
-                    isReady,
+                    isReady &&
+                            !isUnlocking,
 
                 modifier =
                     Modifier
@@ -842,21 +682,26 @@ fun InterventionScreen(
                         .height(60.dp),
 
                 shape =
-                    RoundedCornerShape(
-                        20.dp
-                    )
+                    RoundedCornerShape(20.dp)
             ) {
 
                 Text(
 
                     text =
-                        if (isReady)
-                            "Continue to $displayName"
-                        else
-                            "Wait " +
-                                    formatCountdown(
-                                        remaining
-                                    ),
+                        when {
+
+                            isUnlocking ->
+                                "Opening…"
+
+                            isReady ->
+                                "Continue to $displayName"
+
+                            else ->
+                                "Wait " +
+                                        formatCountdown(
+                                            remaining
+                                        )
+                        },
 
                     style =
                         MaterialTheme
@@ -864,7 +709,6 @@ fun InterventionScreen(
                             .titleMedium
                 )
             }
-
 
             Spacer(
                 modifier =
@@ -877,7 +721,7 @@ fun InterventionScreen(
 
 /*
  * ============================================================
- * COUNTDOWN FORMATTER
+ * COUNTDOWN FORMAT
  * ============================================================
  */
 
@@ -886,16 +730,15 @@ fun formatCountdown(
 ): String {
 
     val hours =
-        seconds / 3600L
-
+        seconds / 3_600L
 
     val minutes =
-        (seconds % 3600L) / 60L
-
+        (
+                seconds % 3_600L
+                ) / 60L
 
     val secs =
         seconds % 60L
-
 
     return String.format(
         Locale.US,

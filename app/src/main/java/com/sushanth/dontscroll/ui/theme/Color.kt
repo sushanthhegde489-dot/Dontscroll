@@ -3,7 +3,7 @@ package com.sushanth.dontscroll.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // ============================================================
-// MAROON
+// MAROON PALETTE
 // ============================================================
 
 val Maroon = Color(0xFF8B1E3F)
@@ -15,15 +15,16 @@ val MaroonContainerLight = Color(0xFFFFD9E2)
 
 
 // ============================================================
-// TEAL / TURQUOISE
+// WARM ACCENT COLORS
 // ============================================================
 
-val Turquoise = Color(0xFF20B8B0)
-val TurquoiseLight = Color(0xFF55D8D0)
-val TurquoiseDark = Color(0xFF087D79)
+val Rose = Color(0xFFC94F70)
+val RoseLight = Color(0xFFE9829D)
+val RoseDark = Color(0xFF8F2948)
 
-val TurquoiseContainer = Color(0xFF075C59)
-val TurquoiseContainerLight = Color(0xFFB2F1EC)
+val Peach = Color(0xFFD9795B)
+val PeachLight = Color(0xFFF0A58E)
+val PeachDark = Color(0xFF99452F)
 
 
 // ============================================================
@@ -58,3 +59,16 @@ val LightOnSurfaceVariant = Color(0xFF59454B)
 
 val LightOutline = Color(0xFF8D747B)
 val LightOutlineVariant = Color(0xFFD9C2C8)
+
+
+// ============================================================
+// BREAKDOWN CHART COLORS
+// ============================================================
+
+val ChartMaroon = Color(0xFF8B1E3F)
+val ChartRose = Color(0xFFD94F70)
+val ChartCoral = Color(0xFFE97856)
+val ChartAmber = Color(0xFFE5A83B)
+val ChartPurple = Color(0xFF8E5BB7)
+val ChartBlue = Color(0xFF5B7FC4)
+val ChartPink = Color(0xFFE58BA5)

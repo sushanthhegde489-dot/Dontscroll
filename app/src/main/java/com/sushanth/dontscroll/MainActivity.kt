@@ -3,6 +3,7 @@ package com.sushanth.dontscroll
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -17,12 +18,14 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,17 +37,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 
@@ -69,6 +73,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 import androidx.core.graphics.drawable.toBitmap
 
@@ -78,6 +84,7 @@ import com.sushanth.dontscroll.data.AppDatabase
 import com.sushanth.dontscroll.data.BlockedApp
 import com.sushanth.dontscroll.data.InstalledApp
 import com.sushanth.dontscroll.data.getInstalledApps
+import com.sushanth.dontscroll.service.DoomGuardAccessibilityService
 import com.sushanth.dontscroll.ui.theme.DontscrollTheme
 import com.sushanth.dontscroll.util.ScreenTimeManager
 
@@ -87,7 +94,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 import kotlin.time.Duration.Companion.seconds
+import kotlin.random.Random
 
+import com.sushanth.dontscroll.ui.theme.ChartAmber
+import com.sushanth.dontscroll.ui.theme.ChartBlue
+import com.sushanth.dontscroll.ui.theme.ChartCoral
+import com.sushanth.dontscroll.ui.theme.ChartMaroon
+import com.sushanth.dontscroll.ui.theme.ChartPink
+import com.sushanth.dontscroll.ui.theme.ChartPurple
+import com.sushanth.dontscroll.ui.theme.ChartRose
+
+// ============================================================
+// MAIN ACTIVITY
+// ============================================================
 
 class MainActivity : ComponentActivity() {
 
@@ -97,19 +116,86 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
+
             DontscrollTheme {
+
                 DontscrollApp()
             }
         }
     }
+
 }
 
+// ============================================================
+// PRIVACY POLICY ACCEPTANCE
+// ============================================================
 
-/*
- * ============================================================
- * ACCESSIBILITY SERVICE CHECK
- * ============================================================
- */
+private const val PREFS_NAME =
+    "dontscroll_prefs"
+
+private const val KEY_PRIVACY_POLICY_ACCEPTED =
+    "privacy_policy_accepted"
+
+fun hasAcceptedPrivacyPolicy(
+    context: Context
+): Boolean {
+
+    return context
+        .getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        .getBoolean(
+            KEY_PRIVACY_POLICY_ACCEPTED,
+            false
+        )
+
+}
+
+fun setPrivacyPolicyAccepted(
+    context: Context
+) {
+
+    context
+        .getSharedPreferences(
+            PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        .edit()
+        .putBoolean(
+            KEY_PRIVACY_POLICY_ACCEPTED,
+            true
+        )
+        .apply()
+
+}
+
+// ============================================================
+// PRIVACY POLICY CONTENT
+// ============================================================
+
+private val privacyPolicySections =
+    listOf(
+
+        "What Dontscroll collects" to
+                "Dontscroll reads your device's usage-access data to measure how long you spend in each app, and uses the Accessibility service to detect when you open an app you've protected. This information is used only to power the delays, breakdowns, and unlock delays you see in the app.",
+
+        "Where your data lives" to
+                "Your usage data and the list of apps you've protected are stored locally on your device. Dontscroll does not send this data to any server, and it is not shared with any third party.",
+
+        "Permissions" to
+                "Screen Time Access and Accessibility Service are required for Dontscroll's core features to work. You can revoke either permission at any time from your device Settings, though the app won't be able to function without them.",
+
+        "Changes to this policy" to
+                "If this policy changes, an updated version will be made available within the app.",
+
+        "Contact" to
+                "Questions about this policy can be directed to the app developer."
+    )
+
+// ============================================================
+// ACCESSIBILITY SERVICE CHECK
+// ============================================================
 
 fun isAccessibilityServiceEnabled(
     context: Context
@@ -138,20 +224,43 @@ fun isAccessibilityServiceEnabled(
                 "com.sushanth.dontscroll.service." +
                 "DoomGuardAccessibilityService"
     }
+
 }
 
-
-/*
- * ============================================================
- * ROOT APP
- * ============================================================
- */
+// ============================================================
+// ROOT APP
+// ============================================================
 
 @Composable
 fun DontscrollApp() {
 
     val context =
         LocalContext.current
+
+    var privacyPolicyAccepted by remember {
+        mutableStateOf(
+            hasAcceptedPrivacyPolicy(
+                context
+            )
+        )
+    }
+
+    if (!privacyPolicyAccepted) {
+
+        PrivacyPolicyGateScreen(
+
+            onAgree = {
+
+                setPrivacyPolicyAccepted(
+                    context
+                )
+
+                privacyPolicyAccepted = true
+            }
+        )
+
+        return
+    }
 
     var permissionRefresh by remember {
         mutableLongStateOf(
@@ -163,6 +272,7 @@ fun DontscrollApp() {
         rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) {
+
             permissionRefresh =
                 System.currentTimeMillis()
         }
@@ -222,14 +332,203 @@ fun DontscrollApp() {
     DontscrollMainScreen(
         context = context
     )
+
 }
 
+// ============================================================
+// PRIVACY POLICY GATE
+// ============================================================
 
-/*
- * ============================================================
- * PERMISSIONS SCREEN
- * ============================================================
- */
+@Composable
+private fun PrivacyPolicyGateScreen(
+    onAgree: () -> Unit
+) {
+
+    var agreedCheckbox by remember {
+        mutableStateOf(false)
+    }
+
+    Surface(
+
+        modifier =
+            Modifier.fillMaxSize(),
+
+        color =
+            MaterialTheme
+                .colorScheme
+                .background
+    ) {
+
+        Column(
+            modifier =
+                Modifier.fillMaxSize()
+        ) {
+
+            LazyColumn(
+
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = 16.dp
+                        ),
+
+                verticalArrangement =
+                    Arrangement.spacedBy(12.dp)
+            ) {
+
+                item {
+
+                    Spacer(
+                        Modifier.height(24.dp)
+                    )
+
+                    AppLogo()
+
+                    Spacer(
+                        Modifier.height(16.dp)
+                    )
+
+                    Text(
+
+                        text =
+                            "Before you get started",
+
+                        style =
+                            MaterialTheme
+                                .typography
+                                .headlineMedium,
+
+                        fontWeight =
+                            FontWeight.ExtraBold
+                    )
+
+                    Spacer(
+                        Modifier.height(4.dp)
+                    )
+
+                    Text(
+
+                        text =
+                            "Please read and agree to our Privacy Policy to continue.",
+
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .onSurfaceVariant
+                    )
+                }
+
+                items(
+                    items =
+                        privacyPolicySections
+                ) { (title, body) ->
+
+                    PrivacyPolicySection(
+                        title = title,
+                        body = body
+                    )
+                }
+
+                item {
+
+                    Spacer(
+                        Modifier.height(12.dp)
+                    )
+                }
+            }
+
+            Surface(
+
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .surface,
+
+                shadowElevation =
+                    8.dp
+            ) {
+
+                Column(
+                    modifier =
+                        Modifier.padding(16.dp)
+                ) {
+
+                    Row(
+
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+
+                        Checkbox(
+
+                            checked =
+                                agreedCheckbox,
+
+                            onCheckedChange = {
+                                agreedCheckbox = it
+                            }
+                        )
+
+                        Text(
+                            text =
+                                "I have read and agree to the Privacy Policy",
+
+                            modifier =
+                                Modifier.weight(1f)
+                        )
+                    }
+
+                    Spacer(
+                        Modifier.height(10.dp)
+                    )
+
+                    Button(
+
+                        onClick =
+                            onAgree,
+
+                        enabled =
+                            agreedCheckbox,
+
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        shape =
+                            RoundedCornerShape(14.dp),
+
+                        colors =
+                            ButtonDefaults.buttonColors(
+
+                                containerColor =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .primary,
+
+                                contentColor =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .onPrimary
+                            )
+                    ) {
+
+                        Text(
+                            "Agree & Continue",
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+// ============================================================
+// PERMISSIONS
+// ============================================================
 
 @Composable
 fun RequiredPermissionsScreen(
@@ -246,7 +545,12 @@ fun RequiredPermissionsScreen(
 
     Surface(
         modifier =
-            Modifier.fillMaxSize()
+            Modifier.fillMaxSize(),
+
+        color =
+            MaterialTheme
+                .colorScheme
+                .background
     ) {
 
         Column(
@@ -263,32 +567,7 @@ fun RequiredPermissionsScreen(
                 Arrangement.Center
         ) {
 
-            Box(
-
-                modifier =
-                    Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(
-                            MaterialTheme
-                                .colorScheme
-                                .primaryContainer
-                        ),
-
-                contentAlignment =
-                    Alignment.Center
-            ) {
-
-                Text(
-                    text = "DS",
-                    fontWeight =
-                        FontWeight.ExtraBold,
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary
-                )
-            }
+            AppLogo()
 
             Spacer(
                 Modifier.height(20.dp)
@@ -315,7 +594,7 @@ fun RequiredPermissionsScreen(
             Text(
 
                 text =
-                    "Two permissions are required to get the app working",
+                    "Two permissions are required to get the app working.",
 
                 style =
                     MaterialTheme
@@ -391,14 +670,94 @@ fun RequiredPermissionsScreen(
             )
         }
     }
+
 }
 
+// ============================================================
+// APP LOGO
+// ============================================================
 
-/*
- * ============================================================
- * PERMISSION CARD
- * ============================================================
- */
+// Drop your own logo into res/drawable (or res/drawable/logo.xml for a
+// vector) named exactly "logo" and it will be picked up here automatically,
+// everywhere AppLogo() is used. If no such drawable exists, this falls
+// back to the "DS" monogram.
+
+@Composable
+private fun AppLogo(
+    size: androidx.compose.ui.unit.Dp = 56.dp
+) {
+
+    val context =
+        LocalContext.current
+
+    val logoResId =
+        remember {
+
+            context.resources.getIdentifier(
+                "logo",
+                "drawable",
+                context.packageName
+            )
+        }
+
+    Box(
+
+        modifier =
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(
+                    MaterialTheme
+                        .colorScheme
+                        .primaryContainer
+                ),
+
+        contentAlignment =
+            Alignment.Center
+    ) {
+
+        if (logoResId != 0) {
+
+            Image(
+
+                painter =
+                    androidx.compose.ui.res.painterResource(
+                        id = logoResId
+                    ),
+
+                contentDescription =
+                    "Dontscroll logo",
+
+                contentScale =
+                    androidx.compose.ui.layout.ContentScale.Crop,
+
+                modifier =
+                    Modifier.fillMaxSize()
+            )
+
+        } else {
+
+            Text(
+
+                text =
+                    "DS",
+
+                fontWeight =
+                    FontWeight.ExtraBold,
+
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .onPrimaryContainer
+            )
+        }
+    }
+
+}
+
+// ============================================================
+// PERMISSION CARD
+// ============================================================
 
 @Composable
 private fun PermissionCard(
@@ -421,7 +780,7 @@ private fun PermissionCard(
             Modifier.fillMaxWidth(),
 
         shape =
-            RoundedCornerShape(20.dp),
+            RoundedCornerShape(24.dp),
 
         colors =
             CardDefaults.cardColors(
@@ -437,7 +796,7 @@ private fun PermissionCard(
 
                         MaterialTheme
                             .colorScheme
-                            .surfaceVariant
+                            .surface
                     }
             )
     ) {
@@ -448,6 +807,7 @@ private fun PermissionCard(
         ) {
 
             Row(
+
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
@@ -456,17 +816,21 @@ private fun PermissionCard(
 
                     modifier =
                         Modifier
-                            .size(36.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .background(
+
                                 if (enabled) {
+
                                     MaterialTheme
                                         .colorScheme
                                         .primary
+
                                 } else {
+
                                     MaterialTheme
                                         .colorScheme
-                                        .surface
+                                        .secondaryContainer
                                 }
                             ),
 
@@ -477,20 +841,26 @@ private fun PermissionCard(
                     Text(
 
                         text =
-                            if (enabled) "✓" else number,
+                            if (enabled)
+                                "✓"
+                            else
+                                number,
 
                         fontWeight =
                             FontWeight.Bold,
 
                         color =
                             if (enabled) {
+
                                 MaterialTheme
                                     .colorScheme
                                     .onPrimary
+
                             } else {
+
                                 MaterialTheme
                                     .colorScheme
-                                    .onSurface
+                                    .onSecondaryContainer
                             }
                     )
                 }
@@ -546,41 +916,23 @@ private fun PermissionCard(
                     Modifier.height(14.dp)
                 )
 
-                Button(
+                PrimaryButton(
+
+                    text =
+                        "Enable",
 
                     onClick =
-                        onClick,
-
-                    modifier =
-                        Modifier.fillMaxWidth(),
-
-                    shape =
-                        RoundedCornerShape(14.dp)
-                ) {
-
-                    Text(
-                        "Enable"
-                    )
-                }
+                        onClick
+                )
             }
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * MAIN SCREEN
- *
- * PAGE ORDER:
- *
- * 0 = Protect
- * 1 = Home
- * 2 = Settings
- *
- * Home is therefore physically in the middle.
- * ============================================================
- */
+// ============================================================
+// MAIN SCREEN
+// ============================================================
 
 @Composable
 fun DontscrollMainScreen(
@@ -599,32 +951,24 @@ fun DontscrollMainScreen(
         rememberCoroutineScope()
 
     var apps by remember {
-
         mutableStateOf<List<InstalledApp>>(
             emptyList()
         )
     }
 
     var appsLoading by remember {
-
         mutableStateOf(true)
     }
 
     var refresh by remember {
-
         mutableLongStateOf(
             System.currentTimeMillis()
         )
     }
 
     var selectedApp by remember {
-
         mutableStateOf<InstalledApp?>(null)
     }
-
-    /*
-     * Load installed apps.
-     */
 
     LaunchedEffect(Unit) {
 
@@ -642,10 +986,6 @@ fun DontscrollMainScreen(
 
         appsLoading = false
     }
-
-    /*
-     * Refresh usage every 30 seconds.
-     */
 
     LaunchedEffect(Unit) {
 
@@ -667,10 +1007,6 @@ fun DontscrollMainScreen(
                 emptyList()
         )
 
-    /*
-     * Get today's actual app usage.
-     */
-
     val usageList =
         remember(refresh) {
 
@@ -680,26 +1016,12 @@ fun DontscrollMainScreen(
                 )
         }
 
-    /*
-     * Map:
-     *
-     * packageName -> milliseconds
-     */
-
     val usageMap =
         usageList.associate {
 
             it.packageName to
                     it.totalTimeMillis
         }
-
-    /*
-     * IMPORTANT:
-     *
-     * This is TOTAL ACTUAL SCREEN TIME.
-     *
-     * It is NOT 24 hours.
-     */
 
     val totalScreenTime =
         usageList.sumOf {
@@ -714,47 +1036,30 @@ fun DontscrollMainScreen(
         return
     }
 
-    /*
-     * ========================================================
-     * PAGER
-     * ========================================================
-     */
-
     val pagerState =
         rememberPagerState(
+
             initialPage = 1,
+
             pageCount = {
                 3
             }
         )
 
-    /*
-     * Keep pager and bottom navigation synchronized.
-     */
-
     var currentPage by remember {
-
         mutableLongStateOf(1L)
     }
 
     LaunchedEffect(pagerState) {
 
         snapshotFlow {
-
             pagerState.currentPage
-
         }.collect { page ->
 
             currentPage =
                 page.toLong()
         }
     }
-
-    /*
-     * ========================================================
-     * UI
-     * ========================================================
-     */
 
     Scaffold(
 
@@ -765,11 +1070,13 @@ fun DontscrollMainScreen(
 
         bottomBar = {
 
-            NavigationBar {
+            NavigationBar(
 
-                /*
-                 * PROTECT
-                 */
+                containerColor =
+                    MaterialTheme
+                        .colorScheme
+                        .surface
+            ) {
 
                 NavigationBarItem(
 
@@ -781,16 +1088,14 @@ fun DontscrollMainScreen(
                         scope.launch {
 
                             pagerState
-                                .animateScrollToPage(
-                                    0
-                                )
+                                .animateScrollToPage(0)
                         }
                     },
 
                     icon = {
 
                         Text(
-                            text = "◈",
+                            "◈",
                             fontWeight =
                                 FontWeight.Bold
                         )
@@ -800,12 +1105,6 @@ fun DontscrollMainScreen(
                         Text("Protect")
                     }
                 )
-
-                /*
-                 * HOME
-                 *
-                 * Center item.
-                 */
 
                 NavigationBarItem(
 
@@ -817,16 +1116,14 @@ fun DontscrollMainScreen(
                         scope.launch {
 
                             pagerState
-                                .animateScrollToPage(
-                                    1
-                                )
+                                .animateScrollToPage(1)
                         }
                     },
 
                     icon = {
 
                         Text(
-                            text = "⌂",
+                            "⌂",
                             fontWeight =
                                 FontWeight.Bold
                         )
@@ -836,10 +1133,6 @@ fun DontscrollMainScreen(
                         Text("Home")
                     }
                 )
-
-                /*
-                 * SETTINGS
-                 */
 
                 NavigationBarItem(
 
@@ -851,16 +1144,14 @@ fun DontscrollMainScreen(
                         scope.launch {
 
                             pagerState
-                                .animateScrollToPage(
-                                    2
-                                )
+                                .animateScrollToPage(2)
                         }
                     },
 
                     icon = {
 
                         Text(
-                            text = "⚙",
+                            "⚙",
                             fontWeight =
                                 FontWeight.Bold
                         )
@@ -875,12 +1166,6 @@ fun DontscrollMainScreen(
 
     ) { paddingValues ->
 
-        /*
-         * ====================================================
-         * SWIPEABLE PAGES
-         * ====================================================
-         */
-
         HorizontalPager(
 
             state =
@@ -889,19 +1174,10 @@ fun DontscrollMainScreen(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .padding(
-                        paddingValues
-                    )
-
+                    .padding(paddingValues)
         ) { page ->
 
             when (page) {
-
-                /*
-                 * ============================================
-                 * PAGE 0 — PROTECT
-                 * ============================================
-                 */
 
                 0 -> {
 
@@ -939,12 +1215,6 @@ fun DontscrollMainScreen(
                     )
                 }
 
-                /*
-                 * ============================================
-                 * PAGE 1 — HOME
-                 * ============================================
-                 */
-
                 1 -> {
 
                     HomeBreakdownScreen(
@@ -955,6 +1225,9 @@ fun DontscrollMainScreen(
                         apps =
                             apps,
 
+                        blockedApps =
+                            blockedApps,
+
                         usageMap =
                             usageMap,
 
@@ -962,12 +1235,6 @@ fun DontscrollMainScreen(
                             totalScreenTime
                     )
                 }
-
-                /*
-                 * ============================================
-                 * PAGE 2 — SETTINGS
-                 * ============================================
-                 */
 
                 2 -> {
 
@@ -980,12 +1247,6 @@ fun DontscrollMainScreen(
             }
         }
     }
-
-    /*
-     * ========================================================
-     * PROTECT DIALOG
-     * ========================================================
-     */
 
     selectedApp?.let { app ->
 
@@ -1044,14 +1305,12 @@ fun DontscrollMainScreen(
             }
         )
     }
+
 }
 
-
-/*
- * ============================================================
- * HOME — BREAKDOWN ONLY
- * ============================================================
- */
+// ============================================================
+// HOME
+// ============================================================
 
 @Composable
 fun HomeBreakdownScreen(
@@ -1060,15 +1319,13 @@ fun HomeBreakdownScreen(
 
     apps: List<InstalledApp>,
 
+    blockedApps: List<BlockedApp>,
+
     usageMap: Map<String, Long>,
 
     totalScreenTime: Long
 
 ) {
-
-    /*
-     * Sort apps by actual usage.
-     */
 
     val sortedApps =
         apps
@@ -1095,16 +1352,8 @@ fun HomeBreakdownScreen(
                 it.second
             }
 
-    /*
-     * Top 6 apps are shown individually.
-     */
-
     val topApps =
         sortedApps.take(6)
-
-    /*
-     * Everything else becomes "Other apps".
-     */
 
     val topSixTime =
         topApps.sumOf {
@@ -1155,36 +1404,44 @@ fun HomeBreakdownScreen(
             )
 
             Text(
-                text = when {
 
-                    totalScreenTime < 30 * 60 * 1000L ->
-                        "You've had a relatively light day. " +
-                                "Great job"
+                text =
+                    when {
 
-                    totalScreenTime < 60 * 60 * 1000L ->
-                        "You've spent a little time on your phone today. " +
-                                "Good going"
+                        totalScreenTime <
+                                30 * 60 * 1000L ->
 
-                    totalScreenTime < 2 * 60 * 60 * 1000L ->
-                        "You've spent over an hour on your phone today. " +
-                                "Its better to touch grass now."
+                            "You've had a relatively light day. Great job."
 
-                    totalScreenTime < 3 * 60 * 60 * 1000L ->
-                        "You've been on your phone for a while today. " +
-                                "Please get off your phone"
+                        totalScreenTime <
+                                60 * 60 * 1000L ->
 
-                    totalScreenTime < 4 * 60 * 60 * 1000L ->
-                        "You've spent quite a lot of time on your phone today. " +
-                                "A stronger pause could be useful."
+                            "You've spent a little time on your phone today. Good going."
 
-                    totalScreenTime < 5 * 60 * 60 * 1000L ->
-                        "You've had a heavy screen-time day. " +
-                                "Consider taking a longer break before using your phone."
+                        totalScreenTime <
+                                2 * 60 * 60 * 1000L ->
 
-                    else ->
-                        "You've spent a lot of time on your phone today. " +
-                                "PLEASE go out and do something"
-                },
+                            "You've spent over an hour on your phone today. It's better to touch grass now."
+
+                        totalScreenTime <
+                                3 * 60 * 60 * 1000L ->
+
+                            "You've been on your phone for a while today. Please get off your phone."
+
+                        totalScreenTime <
+                                4 * 60 * 60 * 1000L ->
+
+                            "You've spent quite a lot of time on your phone today. A stronger pause could be useful."
+
+                        totalScreenTime <
+                                5 * 60 * 60 * 1000L ->
+
+                            "You've had a heavy screen-time day. Consider taking a longer break before using your phone."
+
+                        else ->
+
+                            "You've spent a lot of time on your phone today. PLEASE go out and do something."
+                    },
 
                 color =
                     MaterialTheme
@@ -1192,10 +1449,6 @@ fun HomeBreakdownScreen(
                         .onSurfaceVariant
             )
         }
-
-        /*
-         * TOTAL SCREEN TIME
-         */
 
         item {
 
@@ -1209,16 +1462,15 @@ fun HomeBreakdownScreen(
             )
         }
 
-        /*
-         * DONUT
-         */
-
         item {
 
             CircularUsageCard(
 
                 apps =
                     topApps,
+
+                blockedApps =
+                    blockedApps,
 
                 otherTime =
                     otherTime,
@@ -1238,14 +1490,12 @@ fun HomeBreakdownScreen(
             )
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * TODAY HERO CARD
- * ============================================================
- */
+// ============================================================
+// TODAY HERO
+// ============================================================
 
 @Composable
 fun TodayHeroCard(
@@ -1275,6 +1525,7 @@ fun TodayHeroCard(
     ) {
 
         Column(
+
             modifier =
                 Modifier.padding(20.dp)
         ) {
@@ -1323,8 +1574,11 @@ fun TodayHeroCard(
 
                 text =
                     if (usedAppCount == 1) {
+
                         "across 1 app"
+
                     } else {
+
                         "across $usedAppCount apps"
                     },
 
@@ -1335,38 +1589,19 @@ fun TodayHeroCard(
             )
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * CIRCULAR USAGE CARD
- *
- * EVERY SEGMENT IS A PERCENTAGE OF TOTAL ACTUAL
- * SCREEN TIME.
- *
- * Example:
- *
- * Total screen time = 4 hours
- *
- * YouTube = 2 hours
- * Instagram = 1 hour
- * WhatsApp = 1 hour
- *
- * Result:
- *
- * YouTube = 50%
- * Instagram = 25%
- * WhatsApp = 25%
- *
- * NOT percentages of 24 hours.
- * ============================================================
- */
+// ============================================================
+// CIRCULAR USAGE
+// ============================================================
 
 @Composable
 fun CircularUsageCard(
 
     apps: List<Pair<InstalledApp, Long>>,
+
+    blockedApps: List<BlockedApp>,
 
     otherTime: Long,
 
@@ -1376,25 +1611,27 @@ fun CircularUsageCard(
 
 ) {
 
-    val materialColors =
+    val colors =
         MaterialTheme.colorScheme
 
+    val protectedPackageNames =
+        remember(blockedApps) {
+
+            blockedApps
+                .map { it.packageName }
+                .toSet()
+        }
+
     val chartColors = listOf(
-
-        materialColors.primary,
-
-        materialColors.secondary,
-
-        materialColors.tertiary,
-
-        materialColors.error,
-
-        materialColors.primaryContainer,
-
-        materialColors.secondaryContainer,
-
-        materialColors.tertiaryContainer
+        ChartMaroon,
+        ChartRose,
+        ChartCoral,
+        ChartAmber,
+        ChartPurple,
+        ChartBlue,
+        ChartPink
     )
+
 
     val hasOther =
         otherTime > 0L
@@ -1415,7 +1652,7 @@ fun CircularUsageCard(
             CardDefaults.cardColors(
 
                 containerColor =
-                    materialColors.surface
+                    colors.surface
             )
     ) {
 
@@ -1427,68 +1664,43 @@ fun CircularUsageCard(
                     .padding(18.dp)
         ) {
 
-            /*
-             * HEADER
-             */
+            Text(
 
-            Row(
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
+                text =
+                    "Today's breakdown",
 
-                Column(
-                    modifier =
-                        Modifier.weight(1f)
-                ) {
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleLarge,
 
-                    Text(
+                fontWeight =
+                    FontWeight.Bold
+            )
 
-                        text =
-                            "Today's breakdown",
+            Spacer(
+                Modifier.height(3.dp)
+            )
 
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleLarge,
+            Text(
 
-                        fontWeight =
-                            FontWeight.Bold
-                    )
+                text =
+                    if (totalUsageAppCount == 1) {
 
-                    Spacer(
-                        Modifier.height(3.dp)
-                    )
+                        "1 app used today"
 
-                    Text(
+                    } else {
 
-                        text =
-                            if (
-                                totalUsageAppCount == 1
-                            ) {
+                        "$totalUsageAppCount apps used today"
+                    },
 
-                                "1 app used today"
-
-                            } else {
-
-                                "$totalUsageAppCount apps used today"
-                            },
-
-                        color =
-                            materialColors
-                                .onSurfaceVariant
-                    )
-                }
-            }
+                color =
+                    colors.onSurfaceVariant
+            )
 
             Spacer(
                 Modifier.height(16.dp)
             )
-
-            /*
-             * =================================================
-             * DONUT
-             * =================================================
-             */
 
             Box(
 
@@ -1505,7 +1717,6 @@ fun CircularUsageCard(
 
                     modifier =
                         Modifier.size(215.dp)
-
                 ) {
 
                     val strokeWidth =
@@ -1525,14 +1736,14 @@ fun CircularUsageCard(
                         )
 
                     /*
-                     * Base ring.
+                     * Empty ring.
+                     * Use a warm tinted color rather than grey.
                      */
 
                     drawArc(
 
                         color =
-                            materialColors
-                                .surfaceVariant,
+                            colors.primaryContainer,
 
                         startAngle =
                             -90f,
@@ -1561,11 +1772,6 @@ fun CircularUsageCard(
                             )
                     )
 
-                    /*
-                     * Only draw usage segments if there
-                     * is actual screen time.
-                     */
-
                     if (
                         totalScreenTime > 0L
                     ) {
@@ -1577,32 +1783,20 @@ fun CircularUsageCard(
                             if (
                                 chartItemCount > 1
                             ) {
+
                                 1.5f
+
                             } else {
+
                                 0f
                             }
-
-                        /*
-                         * APP SEGMENTS
-                         */
 
                         apps.forEachIndexed {
                                 index,
                                 pair ->
 
-                            val appTime =
-                                pair.second
-
-                            /*
-                             * THIS IS THE IMPORTANT PART:
-                             *
-                             * appTime / TOTAL SCREEN TIME
-                             *
-                             * NOT appTime / 24 hours.
-                             */
-
                             val fraction =
-                                appTime.toFloat() /
+                                pair.second.toFloat() /
                                         totalScreenTime
                                             .toFloat()
 
@@ -1623,8 +1817,7 @@ fun CircularUsageCard(
                                 color =
                                     chartColors[
                                         index %
-                                                chartColors
-                                                    .size
+                                                chartColors.size
                                     ],
 
                                 startAngle =
@@ -1662,10 +1855,6 @@ fun CircularUsageCard(
                                 sweep
                         }
 
-                        /*
-                         * OTHER APPS
-                         */
-
                         if (hasOther) {
 
                             val fraction =
@@ -1688,8 +1877,7 @@ fun CircularUsageCard(
                             drawArc(
 
                                 color =
-                                    materialColors
-                                        .outlineVariant,
+                                    colors.secondary,
 
                                 startAngle =
                                     currentAngle +
@@ -1715,19 +1903,12 @@ fun CircularUsageCard(
                                 style =
                                     Stroke(
                                         width =
-                                            strokeWidth,
-
-                                        cap =
-                                            StrokeCap.Butt
+                                            strokeWidth
                                     )
                             )
                         }
                     }
                 }
-
-                /*
-                 * CENTER OF DONUT
-                 */
 
                 Column(
 
@@ -1746,7 +1927,7 @@ fun CircularUsageCard(
                                 .labelLarge,
 
                         color =
-                            materialColors
+                            colors
                                 .onSurfaceVariant
                     )
 
@@ -1770,29 +1951,8 @@ fun CircularUsageCard(
                         fontWeight =
                             FontWeight.ExtraBold
                     )
-
-                    /*Text(
-
-                        text =
-                            "",
-
-                        style =
-                            MaterialTheme
-                                .typography
-                                .labelMedium,
-
-                        color =
-                            materialColors
-                                .onSurfaceVariant
-                    )*/
                 }
             }
-
-            /*
-             * =================================================
-             * LEGEND
-             * =================================================
-             */
 
             if (apps.isNotEmpty()) {
 
@@ -1820,13 +1980,14 @@ fun CircularUsageCard(
                             chartColors[
                                 index %
                                         chartColors.size
-                            ]
+                            ],
+
+                        isProtected =
+                            protectedPackageNames.contains(
+                                pair.first.packageName
+                            )
                     )
                 }
-
-                /*
-                 * OTHER APPS LEGEND
-                 */
 
                 if (hasOther) {
 
@@ -1842,8 +2003,10 @@ fun CircularUsageCard(
                             totalScreenTime,
 
                         color =
-                            materialColors
-                                .outlineVariant
+                            colors.secondary,
+
+                        isProtected =
+                            false
                     )
                 }
 
@@ -1856,24 +2019,20 @@ fun CircularUsageCard(
                 Text(
 
                     text =
-                        "Use some apps and your breakdown " +
-                                "will appear here.",
+                        "Use some apps and your breakdown will appear here.",
 
                     color =
-                        materialColors
-                            .onSurfaceVariant
+                        colors.onSurfaceVariant
                 )
             }
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * LEGEND ROW
- * ============================================================
- */
+// ============================================================
+// USAGE LEGEND
+// ============================================================
 
 @Composable
 private fun UsageLegendRow(
@@ -1884,12 +2043,13 @@ private fun UsageLegendRow(
 
     total: Long,
 
-    color: Color
+    color: Color,
+
+    isProtected: Boolean = false
 
 ) {
 
     val percentage =
-
         if (total > 0L) {
 
             (
@@ -1928,27 +2088,54 @@ private fun UsageLegendRow(
             Modifier.width(10.dp)
         )
 
-        Text(
-
-            text =
-                name,
+        Row(
 
             modifier =
                 Modifier.weight(1f),
 
-            fontWeight =
-                FontWeight.Medium,
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
 
-            maxLines = 1
-        )
+            Text(
+
+                text =
+                    name,
+
+                modifier =
+                    Modifier.weight(
+                        1f,
+                        fill = false
+                    ),
+
+                fontWeight =
+                    FontWeight.Medium,
+
+                maxLines =
+                    1
+            )
+
+            if (isProtected) {
+
+                Spacer(
+                    Modifier.width(6.dp)
+                )
+
+                Text(
+                    text = "🔒",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .labelSmall
+                )
+            }
+        }
 
         Text(
 
             text =
                 ScreenTimeManager
-                    .formatDuration(
-                        time
-                    ),
+                    .formatDuration(time),
 
             color =
                 MaterialTheme
@@ -1971,31 +2158,30 @@ private fun UsageLegendRow(
                 Modifier.width(42.dp),
 
             fontWeight =
-                FontWeight.Bold
+                FontWeight.Bold,
+
+            color =
+                MaterialTheme
+                    .colorScheme
+                    .primary
         )
     }
+
 }
 
-
-/*
- * ============================================================
- * PERCENTAGE FORMAT
- * ============================================================
- */
+// ============================================================
+// PERCENTAGE
+// ============================================================
 
 private fun formatPercentage(
     percentage: Double
 ): String {
 
-    return if (
-        percentage >= 10.0
-    ) {
+    return if (percentage >= 10.0) {
 
         "${percentage.toInt()}%"
 
-    } else if (
-        percentage >= 1.0
-    ) {
+    } else if (percentage >= 1.0) {
 
         "${"%.1f".format(percentage)}%"
 
@@ -2003,20 +2189,12 @@ private fun formatPercentage(
 
         "<1%"
     }
+
 }
 
-
-/*
- * ============================================================
- * PROTECT SCREEN
- *
- * TOP:
- * Most-used apps as suggestions.
- *
- * BELOW:
- * Search + all installed apps.
- * ============================================================
- */
+// ============================================================
+// PROTECTED APPS
+// ============================================================
 
 @Composable
 fun ProtectedAppsScreen(
@@ -2038,7 +2216,6 @@ fun ProtectedAppsScreen(
 ) {
 
     var search by remember {
-
         mutableStateOf("")
     }
 
@@ -2048,14 +2225,6 @@ fun ProtectedAppsScreen(
                 it.packageName
             }
             .toSet()
-
-    /*
-     * ========================================================
-     * MOST USED APPS
-     *
-     * Top 5 apps with actual usage today.
-     * ========================================================
-     */
 
     val mostUsedApps =
         apps
@@ -2080,12 +2249,6 @@ fun ProtectedAppsScreen(
             }
             .take(5)
 
-    /*
-     * ========================================================
-     * ALL APPS
-     * ========================================================
-     */
-
     val filteredApps =
         apps
             .filter { app ->
@@ -2097,7 +2260,6 @@ fun ProtectedAppsScreen(
                         )
             }
             .sortedBy {
-
                 it.displayName
             }
 
@@ -2113,10 +2275,6 @@ fun ProtectedAppsScreen(
         verticalArrangement =
             Arrangement.spacedBy(10.dp)
     ) {
-
-        /*
-         * HEADER
-         */
 
         item {
 
@@ -2139,13 +2297,13 @@ fun ProtectedAppsScreen(
             )
 
             Spacer(
-                Modifier.height(3.dp)
+                Modifier.height(4.dp)
             )
 
             Text(
 
                 text =
-                    "Add  the apps you want having delay" ,
+                    "Add the apps you want to slow down.",
 
                 color =
                     MaterialTheme
@@ -2154,11 +2312,48 @@ fun ProtectedAppsScreen(
             )
         }
 
-        /*
-         * ====================================================
-         * SUGGESTIONS
-         * ====================================================
-         */
+        if (
+            blockedApps.isNotEmpty() &&
+            search.isBlank()
+        ) {
+
+            item {
+
+                Spacer(
+                    Modifier.height(8.dp)
+                )
+
+                SectionTitle(
+                    "Protected apps"
+                )
+            }
+
+            items(
+                items =
+                    blockedApps
+            ) { blocked ->
+
+                val matchingApp =
+                    apps.firstOrNull {
+
+                        it.packageName ==
+                                blocked.packageName
+                    }
+
+                ProtectedAppRow(
+
+                    app =
+                        matchingApp,
+
+                    blockedApp =
+                        blocked,
+
+                    onUnprotect = {
+                        onUnprotect(blocked)
+                    }
+                )
+            }
+        }
 
         if (
             mostUsedApps.isNotEmpty() &&
@@ -2220,9 +2415,7 @@ fun ProtectedAppsScreen(
 
                         } else {
 
-                            onProtectApp(
-                                app
-                            )
+                            onProtectApp(app)
                         }
                     }
                 )
@@ -2240,10 +2433,6 @@ fun ProtectedAppsScreen(
             }
         }
 
-        /*
-         * SEARCH
-         */
-
         item {
 
             OutlinedTextField(
@@ -2252,7 +2441,6 @@ fun ProtectedAppsScreen(
                     search,
 
                 onValueChange = {
-
                     search = it
                 },
 
@@ -2266,19 +2454,10 @@ fun ProtectedAppsScreen(
                     RoundedCornerShape(16.dp),
 
                 label = {
-
-                    Text(
-                        "Search apps"
-                    )
+                    Text("Search apps")
                 }
             )
         }
-
-        /*
-         * ====================================================
-         * ALL INSTALLED APPS
-         * ====================================================
-         */
 
         items(
             items =
@@ -2307,19 +2486,13 @@ fun ProtectedAppsScreen(
 
                 onClick = {
 
-                    if (
-                        blocked != null
-                    ) {
+                    if (blocked != null) {
 
-                        onUnprotect(
-                            blocked
-                        )
+                        onUnprotect(blocked)
 
                     } else {
 
-                        onProtectApp(
-                            app
-                        )
+                        onProtectApp(app)
                     }
                 }
             )
@@ -2332,14 +2505,12 @@ fun ProtectedAppsScreen(
             )
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * PROTECT SUGGESTION ROW
- * ============================================================
- */
+// ============================================================
+// SUGGESTED ROW
+// ============================================================
 
 @Composable
 private fun SuggestedProtectRow(
@@ -2360,7 +2531,7 @@ private fun SuggestedProtectRow(
             Modifier.fillMaxWidth(),
 
         shape =
-            RoundedCornerShape(18.dp),
+            RoundedCornerShape(20.dp),
 
         color =
             if (blocked) {
@@ -2373,7 +2544,7 @@ private fun SuggestedProtectRow(
 
                 MaterialTheme
                     .colorScheme
-                    .surfaceVariant
+                    .surface
             }
     ) {
 
@@ -2388,32 +2559,9 @@ private fun SuggestedProtectRow(
                 Alignment.CenterVertically
         ) {
 
-            Image(
-
-                bitmap =
-                    remember(
-                        app.packageName
-                    ) {
-
-                        app.icon
-                            .toBitmap(
-                                width = 96,
-                                height = 96
-                            )
-                            .asImageBitmap()
-                    },
-
-                contentDescription =
-                    app.displayName,
-
-                modifier =
-                    Modifier
-                        .size(46.dp)
-                        .clip(
-                            RoundedCornerShape(
-                                12.dp
-                            )
-                        )
+            AppIcon(
+                app = app,
+                size = 46.dp
             )
 
             Spacer(
@@ -2433,16 +2581,15 @@ private fun SuggestedProtectRow(
                     fontWeight =
                         FontWeight.Bold,
 
-                    maxLines = 1
+                    maxLines =
+                        1
                 )
 
                 Text(
 
                     text =
                         ScreenTimeManager
-                            .formatDuration(
-                                time
-                            ),
+                            .formatDuration(time),
 
                     color =
                         MaterialTheme
@@ -2454,44 +2601,150 @@ private fun SuggestedProtectRow(
             if (blocked) {
 
                 TextButton(
-
                     onClick =
                         onClick
                 ) {
 
                     Text(
-                        "Protected"
+                        "Protected",
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .primary
                     )
                 }
 
             } else {
 
-                Button(
+                PrimaryButton(
+
+                    text =
+                        "Protect",
 
                     onClick =
-                        onClick,
-
-                    shape =
-                        RoundedCornerShape(
-                            12.dp
-                        )
-                ) {
-
-                    Text(
-                        "Protect"
-                    )
-                }
+                        onClick
+                )
             }
         }
     }
+
 }
 
+// ============================================================
+// PROTECTED APP ROW
+// ============================================================
 
-/*
- * ============================================================
- * APP ROW
- * ============================================================
- */
+@Composable
+private fun ProtectedAppRow(
+
+    app: InstalledApp?,
+
+    blockedApp: BlockedApp,
+
+    onUnprotect: () -> Unit
+
+) {
+
+    Surface(
+
+        modifier =
+            Modifier.fillMaxWidth(),
+
+        shape =
+            RoundedCornerShape(20.dp),
+
+        color =
+            MaterialTheme
+                .colorScheme
+                .primaryContainer
+    ) {
+
+        Row(
+
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+
+            if (app != null) {
+
+                AppIcon(
+                    app = app,
+                    size = 46.dp
+                )
+
+                Spacer(
+                    Modifier.width(12.dp)
+                )
+            }
+
+            Column(
+                modifier =
+                    Modifier.weight(1f)
+            ) {
+
+                Text(
+
+                    text =
+                        blockedApp.displayName,
+
+                    fontWeight =
+                        FontWeight.Bold,
+
+                    maxLines =
+                        1
+                )
+
+                Text(
+
+                    text =
+                        if (blockedApp.automaticDelay) {
+
+                            "Automatic delay · " +
+                                    formatDelay(
+                                        blockedApp.unlockDelaySeconds
+                                    )
+
+                        } else {
+
+                            "Unlock delay: " +
+                                    formatDelay(
+                                        blockedApp.unlockDelaySeconds
+                                    )
+                        },
+
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .onSurfaceVariant
+                )
+            }
+
+            TextButton(
+                onClick =
+                    onUnprotect
+            ) {
+
+                Text(
+                    "Remove",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .primary
+                )
+            }
+        }
+    }
+
+}
+
+// ============================================================
+// APP ROW
+// ============================================================
 
 @Composable
 fun DashboardAppRow(
@@ -2509,26 +2762,24 @@ fun DashboardAppRow(
     Surface(
 
         modifier =
-            Modifier
-                .fillMaxWidth()
-                .clip(
-                    RoundedCornerShape(
-                        18.dp
-                    )
-                ),
+            Modifier.fillMaxWidth(),
+
+        shape =
+            RoundedCornerShape(20.dp),
 
         color =
-            if (blocked)
+            if (blocked) {
 
                 MaterialTheme
                     .colorScheme
                     .primaryContainer
 
-            else
+            } else {
 
                 MaterialTheme
                     .colorScheme
-                    .surfaceVariant
+                    .surface
+            }
     ) {
 
         Row(
@@ -2542,32 +2793,9 @@ fun DashboardAppRow(
                 Alignment.CenterVertically
         ) {
 
-            Image(
-
-                bitmap =
-                    remember(
-                        app.packageName
-                    ) {
-
-                        app.icon
-                            .toBitmap(
-                                width = 96,
-                                height = 96
-                            )
-                            .asImageBitmap()
-                    },
-
-                contentDescription =
-                    app.displayName,
-
-                modifier =
-                    Modifier
-                        .size(44.dp)
-                        .clip(
-                            RoundedCornerShape(
-                                12.dp
-                            )
-                        )
+            AppIcon(
+                app = app,
+                size = 44.dp
             )
 
             Spacer(
@@ -2575,6 +2803,7 @@ fun DashboardAppRow(
             )
 
             Column(
+
                 modifier =
                     Modifier.weight(1f)
             ) {
@@ -2587,15 +2816,14 @@ fun DashboardAppRow(
                     fontWeight =
                         FontWeight.Bold,
 
-                    maxLines = 1
+                    maxLines =
+                        1
                 )
 
                 Text(
 
                     text =
-                        if (
-                            screenTimeMillis > 0L
-                        ) {
+                        if (screenTimeMillis > 0L) {
 
                             ScreenTimeManager
                                 .formatDuration(
@@ -2615,7 +2843,6 @@ fun DashboardAppRow(
             }
 
             TextButton(
-
                 onClick =
                     onClick
             ) {
@@ -2625,19 +2852,63 @@ fun DashboardAppRow(
                     if (blocked)
                         "Protected"
                     else
-                        "Protect"
+                        "Protect",
+
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .primary
                 )
             }
         }
     }
+
 }
 
+// ============================================================
+// APP ICON
+// ============================================================
 
-/*
- * ============================================================
- * SETTINGS
- * ============================================================
- */
+@Composable
+private fun AppIcon(
+
+    app: InstalledApp,
+
+    size: androidx.compose.ui.unit.Dp
+
+) {
+
+    Image(
+
+        bitmap =
+            remember(
+                app.packageName
+            ) {
+
+                app.icon
+                    .toBitmap(
+                        width = 96,
+                        height = 96
+                    )
+                    .asImageBitmap()
+            },
+
+        contentDescription =
+            app.displayName,
+
+        modifier =
+            Modifier
+                .size(size)
+                .clip(
+                    RoundedCornerShape(13.dp)
+                )
+    )
+
+}
+
+// ============================================================
+// SETTINGS
+// ============================================================
 
 @Composable
 fun SettingsScreen(
@@ -2646,6 +2917,72 @@ fun SettingsScreen(
 
     val context =
         LocalContext.current
+
+    var settingsRefresh by remember {
+        mutableLongStateOf(
+            System.currentTimeMillis()
+        )
+    }
+
+    var showBreakDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var pendingConfirmAction by remember {
+        mutableStateOf<PendingConfirmAction?>(null)
+    }
+
+    var confirmStep by remember {
+        mutableStateOf(0)
+    }
+
+    var showPrivacyPolicy by remember {
+        mutableStateOf(false)
+    }
+
+    if (showPrivacyPolicy) {
+
+        PrivacyPolicyScreen(
+
+            modifier =
+                modifier,
+
+            onBack = {
+                showPrivacyPolicy = false
+            }
+        )
+
+        return
+    }
+
+    LaunchedEffect(Unit) {
+
+        while (true) {
+
+            delay(1_000L)
+
+            settingsRefresh =
+                System.currentTimeMillis()
+        }
+    }
+
+    val blockingEnabled =
+        remember(settingsRefresh) {
+
+            DoomGuardAccessibilityService
+                .isBlockingEnabled(context)
+        }
+
+    val breakUntil =
+        remember(settingsRefresh) {
+
+            DoomGuardAccessibilityService
+                .getBreakUntil(context)
+        }
+
+    val breakActive =
+        breakUntil >
+                System.currentTimeMillis()
 
     LazyColumn(
 
@@ -2681,7 +3018,7 @@ fun SettingsScreen(
             )
 
             Spacer(
-                Modifier.height(3.dp)
+                Modifier.height(4.dp)
             )
 
             Text(
@@ -2696,9 +3033,294 @@ fun SettingsScreen(
             )
         }
 
-        /*
-         * USAGE ACCESS
-         */
+        // ----------------------------------------------------
+        // BLOCKING
+        // ----------------------------------------------------
+
+        item {
+
+            Card(
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                shape =
+                    RoundedCornerShape(24.dp),
+
+                colors =
+                    CardDefaults.cardColors(
+
+                        containerColor =
+                            if (
+                                blockingEnabled &&
+                                !breakActive
+                            ) {
+
+                                MaterialTheme
+                                    .colorScheme
+                                    .primaryContainer
+
+                            } else {
+
+                                MaterialTheme
+                                    .colorScheme
+                                    .surface
+                            }
+                    )
+            ) {
+
+                Column(
+                    modifier =
+                        Modifier.padding(20.dp)
+                ) {
+
+                    Row(
+
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+
+                        Column(
+                            modifier =
+                                Modifier.weight(1f)
+                        ) {
+
+                            Text(
+
+                                text =
+                                    "Blocking",
+
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .titleLarge,
+
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Spacer(
+                                Modifier.height(5.dp)
+                            )
+
+                            Text(
+
+                                text =
+                                    when {
+
+                                        breakActive ->
+                                            "Temporarily paused"
+
+                                        blockingEnabled ->
+                                            "Blocking is active for protected apps."
+
+                                        else ->
+                                            "Blocking is currently turned off."
+                                    },
+
+                                color =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .onSurfaceVariant
+                            )
+                        }
+
+                        Switch(
+
+                            checked =
+                                blockingEnabled &&
+                                        !breakActive,
+
+                            onCheckedChange = { enabled ->
+
+                                if (enabled) {
+
+                                    DoomGuardAccessibilityService
+                                        .enableBlocking(
+                                            context
+                                        )
+
+                                    settingsRefresh =
+                                        System.currentTimeMillis()
+
+                                } else {
+
+                                    pendingConfirmAction =
+                                        PendingConfirmAction.DisableBlocking
+
+                                    confirmStep = 1
+                                }
+                            }
+                        )
+                    }
+
+                    Spacer(
+                        Modifier.height(14.dp)
+                    )
+
+                    Text(
+
+                        text =
+                            if (blockingEnabled) {
+
+                                "Your protected apps will show an unlock delay when you open them."
+
+                            } else {
+
+                                "Your protected apps are saved, but blocking is currently disabled."
+                            },
+
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // ----------------------------------------------------
+        // BREAK
+        // ----------------------------------------------------
+
+        item {
+
+            Card(
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                shape =
+                    RoundedCornerShape(24.dp),
+
+                colors =
+                    CardDefaults.cardColors(
+
+                        containerColor =
+                            if (breakActive) {
+
+                                MaterialTheme
+                                    .colorScheme
+                                    .secondaryContainer
+
+                            } else {
+
+                                MaterialTheme
+                                    .colorScheme
+                                    .surface
+                            }
+                    )
+            ) {
+
+                Column(
+
+                    modifier =
+                        Modifier.padding(20.dp)
+                ) {
+
+                    Text(
+
+                        text =
+                            if (breakActive)
+                                "Break active"
+                            else
+                                "Take a break",
+
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleLarge,
+
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Spacer(
+                        Modifier.height(5.dp)
+                    )
+
+                    if (breakActive) {
+
+                        Text(
+
+                            text =
+                                "Blocking is paused for " +
+                                        formatRemainingBreak(
+                                            breakUntil
+                                        ) +
+                                        ".",
+
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .onSurfaceVariant
+                        )
+
+                        Spacer(
+                            Modifier.height(14.dp)
+                        )
+
+                        TextButton(
+
+                            onClick = {
+
+                                DoomGuardAccessibilityService
+                                    .endBreak(
+                                        context
+                                    )
+
+                                settingsRefresh =
+                                    System.currentTimeMillis()
+                            }
+                        ) {
+
+                            Text(
+                                "End break"
+                            )
+                        }
+
+                    } else {
+
+                        Text(
+
+                            text =
+                                "Pause Dontscroll temporarily. Your protected apps will remain saved.",
+
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .onSurfaceVariant
+                        )
+
+                        Spacer(
+                            Modifier.height(14.dp)
+                        )
+
+                        PrimaryButton(
+
+                            text =
+                                "Take a break",
+
+                            onClick = {
+                                showBreakDialog = true
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------
+        // USAGE ACCESS
+        // ----------------------------------------------------
 
         item {
 
@@ -2718,7 +3340,6 @@ fun SettingsScreen(
                     context.startActivity(
 
                         Intent(
-
                             Settings
                                 .ACTION_USAGE_ACCESS_SETTINGS
                         )
@@ -2727,9 +3348,9 @@ fun SettingsScreen(
             )
         }
 
-        /*
-         * ACCESSIBILITY
-         */
+        // ----------------------------------------------------
+        // ACCESSIBILITY
+        // ----------------------------------------------------
 
         item {
 
@@ -2739,8 +3360,7 @@ fun SettingsScreen(
                     "Accessibility Service",
 
                 description =
-                    "Required to detect protected apps and " +
-                            "show the unlock delay.",
+                    "Required to detect protected apps and show the unlock delay.",
 
                 buttonText =
                     "Open Accessibility",
@@ -2750,7 +3370,6 @@ fun SettingsScreen(
                     context.startActivity(
 
                         Intent(
-
                             Settings
                                 .ACTION_ACCESSIBILITY_SETTINGS
                         )
@@ -2759,9 +3378,32 @@ fun SettingsScreen(
             )
         }
 
-        /*
-         * ABOUT
-         */
+        // ----------------------------------------------------
+        // PRIVACY POLICY
+        // ----------------------------------------------------
+
+        item {
+
+            SettingsCard(
+
+                title =
+                    "Privacy Policy",
+
+                description =
+                    "See how Dontscroll handles your data.",
+
+                buttonText =
+                    "View Privacy Policy",
+
+                onClick = {
+                    showPrivacyPolicy = true
+                }
+            )
+        }
+
+        // ----------------------------------------------------
+        // ABOUT
+        // ----------------------------------------------------
 
         item {
 
@@ -2771,10 +3413,20 @@ fun SettingsScreen(
                     Modifier.fillMaxWidth(),
 
                 shape =
-                    RoundedCornerShape(20.dp)
+                    RoundedCornerShape(24.dp),
+
+                colors =
+                    CardDefaults.cardColors(
+
+                        containerColor =
+                            MaterialTheme
+                                .colorScheme
+                                .surface
+                    )
             ) {
 
                 Column(
+
                     modifier =
                         Modifier.padding(20.dp)
                 ) {
@@ -2787,7 +3439,7 @@ fun SettingsScreen(
                         style =
                             MaterialTheme
                                 .typography
-                                .titleMedium,
+                                .titleLarge,
 
                         fontWeight =
                             FontWeight.Bold
@@ -2800,42 +3452,24 @@ fun SettingsScreen(
                     Text(
 
                         text =
-                            "Dontscroll helps you become more " +
-                                    "intentional with your screen time " +
-                                    "by adding friction before opening " +
-                                    "distracting apps so that you " +
-                                    "think twice before using the app " +
-                                    "(unless you're aysh lolll)",
+                            "Dontscroll helps you become more intentional with your screen time by adding friction before opening distracting apps so that you think twice before using the app (unless you're aysh lolll)",
 
                         color =
                             MaterialTheme
                                 .colorScheme
                                 .onSurfaceVariant
                     )
-
-                    Spacer(
-                        Modifier.height(12.dp)
-                    )
-
-                    Surface(
-
-                        shape =
-                            RoundedCornerShape(12.dp),
-
-                        color =
-                            MaterialTheme
-                                .colorScheme
-                                .surfaceVariant
-                    ) {
-
-                        Spacer(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                        )
-                    }
                 }
             }
+        }
+
+        // ----------------------------------------------------
+        // SUPPORT THE DEVELOPER
+        // ----------------------------------------------------
+
+        item {
+
+            SupportDeveloperCard()
         }
 
         item {
@@ -2845,25 +3479,552 @@ fun SettingsScreen(
             )
         }
     }
+
+    if (showBreakDialog) {
+
+        BreakDurationDialog(
+
+            onDismiss = {
+                showBreakDialog = false
+            },
+
+            onSelected = { durationMillis ->
+
+                showBreakDialog = false
+
+                pendingConfirmAction =
+                    PendingConfirmAction.StartBreak(
+                        durationMillis
+                    )
+
+                confirmStep = 1
+            }
+        )
+    }
+
+    if (
+        confirmStep > 0 &&
+        pendingConfirmAction != null
+    ) {
+
+        DoubleConfirmDialog(
+
+            step =
+                confirmStep,
+
+            action =
+                pendingConfirmAction!!,
+
+            onCancel = {
+
+                pendingConfirmAction = null
+
+                confirmStep = 0
+            },
+
+            onAdvance = {
+
+                confirmStep += 1
+            },
+
+            onConfirmed = { action ->
+
+                when (action) {
+
+                    is PendingConfirmAction.DisableBlocking -> {
+
+                        DoomGuardAccessibilityService
+                            .disableBlocking(
+                                context
+                            )
+                    }
+
+                    is PendingConfirmAction.StartBreak -> {
+
+                        DoomGuardAccessibilityService
+                            .startBreak(
+                                context,
+                                action.durationMillis
+                            )
+                    }
+                }
+
+                pendingConfirmAction = null
+
+                confirmStep = 0
+
+                settingsRefresh =
+                    System.currentTimeMillis()
+            }
+        )
+    }
+
 }
 
+// ============================================================
+// SUPPORT THE DEVELOPER
+// ============================================================
 
-/*
- * ============================================================
- * SETTINGS CARD
- * ============================================================
- */
+private const val BUY_ME_A_COFFEE_URL =
+    "https://buymeacoffee.com/idkagn"
 
 @Composable
-private fun SettingsCard(
+private fun SupportDeveloperCard() {
+
+    val context =
+        LocalContext.current
+
+    Card(
+
+        modifier =
+            Modifier.fillMaxWidth(),
+
+        shape =
+            RoundedCornerShape(24.dp),
+
+        colors =
+            CardDefaults.cardColors(
+
+                containerColor =
+                    ChartAmber.copy(alpha = 0.18f)
+            )
+    ) {
+
+        Column(
+            modifier =
+                Modifier.padding(20.dp)
+        ) {
+
+            Text(
+
+                text =
+                    "Enjoying Dontscroll?",
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleMedium,
+
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            Spacer(
+                Modifier.height(3.dp)
+            )
+
+            Text(
+
+                text =
+                    "It's free and always will be. If it's helped you scroll less, you can buy me a coffee.",
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodySmall,
+
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .onSurfaceVariant
+            )
+
+            Spacer(
+                Modifier.height(14.dp)
+            )
+
+            Button(
+
+                onClick = {
+
+                    val intent =
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse(
+                                BUY_ME_A_COFFEE_URL
+                            )
+                        )
+
+                    context.startActivity(intent)
+                },
+
+                shape =
+                    RoundedCornerShape(14.dp),
+
+                colors =
+                    ButtonDefaults.buttonColors(
+
+                        containerColor =
+                            ChartAmber,
+
+                        contentColor =
+                            Color.Black
+                    )
+            ) {
+
+                Text(
+                    "Buy me a coffee",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+        }
+    }
+
+}
+
+// ============================================================
+// PENDING CONFIRM ACTION
+// ============================================================
+
+private sealed class PendingConfirmAction {
+
+    data class StartBreak(
+        val durationMillis: Long
+    ) : PendingConfirmAction()
+
+    object DisableBlocking : PendingConfirmAction()
+
+}
+
+// ============================================================
+// DOUBLE CONFIRM DIALOG
+// ============================================================
+
+// No card, no dialog box — this is a full-screen overlay. The
+// confirm action jumps to a random spot on the screen each step
+// so it can never be reflex-tapped, while "Never mind" stays put
+// in an obvious, easy place.
+
+@Composable
+private fun DoubleConfirmDialog(
+
+    step: Int,
+
+    action: PendingConfirmAction,
+
+    onCancel: () -> Unit,
+
+    onAdvance: () -> Unit,
+
+    onConfirmed: (PendingConfirmAction) -> Unit
+
+) {
+
+    val actionLabel =
+        when (action) {
+
+            is PendingConfirmAction.StartBreak ->
+                "take a break"
+
+            is PendingConfirmAction.DisableBlocking ->
+                "turn off blocking"
+        }
+
+    val title =
+        if (step == 1) {
+
+            "Are you sure?"
+
+        } else {
+
+            "Are you really sure, Palak??"
+        }
+
+    val message =
+        if (step == 1) {
+
+            "You're about to $actionLabel. Your protected apps won't be slowed down while this is active."
+
+        } else {
+
+            "This is your last chance to back out. You really want to $actionLabel?"
+        }
+
+    val confirmText =
+        if (step >= 2) "Yes, really" else "Yes, I'm sure"
+
+    // A brief cooldown after each step appears, so the confirm text
+    // can't be tapped through on reflex before it's even been read.
+
+    var confirmEnabled by remember(step, action) {
+        mutableStateOf(false)
+    }
+
+    LaunchedEffect(step, action) {
+
+        confirmEnabled = false
+
+        delay(500L)
+
+        confirmEnabled = true
+    }
+
+    Dialog(
+
+        onDismissRequest =
+            onCancel,
+
+        properties =
+            DialogProperties(
+                usePlatformDefaultWidth = false
+            )
+    ) {
+
+        BoxWithConstraints(
+
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Color.Black.copy(alpha = 0.82f)
+                    )
+        ) {
+
+            // Re-rolled every time a new step is shown, across the
+            // full screen — not confined to a small box. Margins
+            // keep it clear of the edges and away from the title
+            // text and the cancel button's safe zones.
+
+            val confirmX = remember(step, action) {
+
+                val maxX =
+                    (maxWidth - 140.dp)
+                        .value
+                        .toInt()
+                        .coerceAtLeast(1)
+
+                Random.nextInt(0, maxX).dp
+            }
+
+            val confirmY = remember(step, action) {
+
+                val minY = 180
+
+                val maxY =
+                    (maxHeight - 160.dp)
+                        .value
+                        .toInt()
+                        .coerceAtLeast(minY + 1)
+
+                Random.nextInt(minY, maxY).dp
+            }
+
+            Column(
+
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(
+                            top = 64.dp,
+                            start = 28.dp,
+                            end = 28.dp
+                        )
+            ) {
+
+                Text(
+                    text = title,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+
+                Spacer(
+                    Modifier.height(10.dp)
+                )
+
+                Text(
+                    text = message,
+                    color = Color.White.copy(alpha = 0.75f)
+                )
+            }
+
+            TextButton(
+
+                onClick = {
+
+                    if (step >= 2) {
+
+                        onConfirmed(action)
+
+                    } else {
+
+                        onAdvance()
+                    }
+                },
+
+                enabled =
+                    confirmEnabled,
+
+                modifier =
+                    Modifier.offset(
+                        x = confirmX,
+                        y = confirmY
+                    )
+            ) {
+
+                Text(
+                    text = confirmText,
+                    fontWeight = FontWeight.Bold,
+                    color =
+                        Color.White.copy(
+                            alpha =
+                                if (confirmEnabled) 0.9f else 0.3f
+                        )
+                )
+            }
+
+            Button(
+
+                onClick =
+                    onCancel,
+
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 56.dp),
+
+                shape =
+                    RoundedCornerShape(14.dp),
+
+                colors =
+                    ButtonDefaults.buttonColors(
+
+                        containerColor =
+                            MaterialTheme
+                                .colorScheme
+                                .primary,
+
+                        contentColor =
+                            MaterialTheme
+                                .colorScheme
+                                .onPrimary
+                    )
+            ) {
+
+                Text(
+                    text = "Never mind",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+
+}
+
+// ============================================================
+// PRIVACY POLICY
+// ============================================================
+
+@Composable
+fun PrivacyPolicyScreen(
+
+    modifier: Modifier,
+
+    onBack: () -> Unit
+
+) {
+
+    LazyColumn(
+
+        modifier =
+            modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 16.dp
+                ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
+    ) {
+
+        item {
+
+            Spacer(
+                Modifier.height(18.dp)
+            )
+
+            TextButton(
+                onClick = onBack
+            ) {
+
+                Text(
+                    "← Back to Settings",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .primary
+                )
+            }
+
+            Spacer(
+                Modifier.height(4.dp)
+            )
+
+            Text(
+
+                text =
+                    "Privacy Policy",
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .headlineMedium,
+
+                fontWeight =
+                    FontWeight.ExtraBold
+            )
+
+            Spacer(
+                Modifier.height(4.dp)
+            )
+
+            Text(
+
+                text =
+                    "Last updated: 2026",
+
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .onSurfaceVariant
+            )
+        }
+
+        items(
+            items =
+                privacyPolicySections
+        ) { (title, body) ->
+
+            PrivacyPolicySection(
+                title = title,
+                body = body
+            )
+        }
+
+        item {
+
+            Spacer(
+                Modifier.height(24.dp)
+            )
+        }
+    }
+
+}
+
+// ============================================================
+// PRIVACY POLICY SECTION
+// ============================================================
+
+@Composable
+private fun PrivacyPolicySection(
 
     title: String,
 
-    description: String,
-
-    buttonText: String,
-
-    onClick: () -> Unit
+    body: String
 
 ) {
 
@@ -2873,10 +4034,20 @@ private fun SettingsCard(
             Modifier.fillMaxWidth(),
 
         shape =
-            RoundedCornerShape(20.dp)
+            RoundedCornerShape(24.dp),
+
+        colors =
+            CardDefaults.cardColors(
+
+                containerColor =
+                    MaterialTheme
+                        .colorScheme
+                        .surface
+            )
     ) {
 
         Column(
+
             modifier =
                 Modifier.padding(20.dp)
         ) {
@@ -2902,6 +4073,80 @@ private fun SettingsCard(
             Text(
 
                 text =
+                    body,
+
+                color =
+                    MaterialTheme
+                        .colorScheme
+                        .onSurfaceVariant
+            )
+        }
+    }
+
+}
+
+// ============================================================
+// SETTINGS CARD
+// ============================================================
+
+@Composable
+private fun SettingsCard(
+
+    title: String,
+
+    description: String,
+
+    buttonText: String,
+
+    onClick: () -> Unit
+
+) {
+
+    Card(
+
+        modifier =
+            Modifier.fillMaxWidth(),
+
+        shape =
+            RoundedCornerShape(24.dp),
+
+        colors =
+            CardDefaults.cardColors(
+
+                containerColor =
+                    MaterialTheme
+                        .colorScheme
+                        .surface
+            )
+    ) {
+
+        Column(
+
+            modifier =
+                Modifier.padding(20.dp)
+        ) {
+
+            Text(
+
+                text =
+                    title,
+
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleLarge,
+
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            Spacer(
+                Modifier.height(6.dp)
+            )
+
+            Text(
+
+                text =
                     description,
 
                 color =
@@ -2914,29 +4159,67 @@ private fun SettingsCard(
                 Modifier.height(14.dp)
             )
 
-            Button(
+            PrimaryButton(
+
+                text =
+                    buttonText,
 
                 onClick =
-                    onClick,
-
-                shape =
-                    RoundedCornerShape(13.dp)
-            ) {
-
-                Text(
-                    buttonText
-                )
-            }
+                    onClick
+            )
         }
     }
+
 }
 
+// ============================================================
+// PRIMARY BUTTON
+// ============================================================
 
-/*
- * ============================================================
- * SECTION TITLE
- * ============================================================
- */
+@Composable
+private fun PrimaryButton(
+
+    text: String,
+
+    onClick: () -> Unit
+
+) {
+
+    Button(
+
+        onClick =
+            onClick,
+
+        shape =
+            RoundedCornerShape(14.dp),
+
+        colors =
+            ButtonDefaults.buttonColors(
+
+                containerColor =
+                    MaterialTheme
+                        .colorScheme
+                        .primary,
+
+                contentColor =
+                    MaterialTheme
+                        .colorScheme
+                        .onPrimary
+            )
+    ) {
+
+        Text(
+            text,
+            fontWeight =
+                FontWeight.Bold
+        )
+    }
+
+}
+
+// ============================================================
+// SECTION TITLE
+// ============================================================
 
 @Composable
 fun SectionTitle(
@@ -2951,19 +4234,22 @@ fun SectionTitle(
         style =
             MaterialTheme
                 .typography
-                .titleLarge,
+                .titleSmall,
 
         fontWeight =
-            FontWeight.ExtraBold
+            FontWeight.Bold,
+
+        color =
+            MaterialTheme
+                .colorScheme
+                .onSurfaceVariant
     )
+
 }
 
-
-/*
- * ============================================================
- * DELAY CALCULATION
- * ============================================================
- */
+// ============================================================
+// DELAY CALCULATION
+// ============================================================
 
 fun calculateAutomaticDelay(
     screenTimeMillis: Long
@@ -2975,35 +4261,26 @@ fun calculateAutomaticDelay(
 
     return when {
 
-        minutes < 30L ->
-            15L
+        minutes < 30L -> 15L
 
-        minutes < 60L ->
-            30L
+        minutes < 60L -> 30L
 
-        minutes < 120L ->
-            60L
+        minutes < 120L -> 60L
 
-        minutes < 180L ->
-            120L
+        minutes < 180L -> 120L
 
-        minutes < 240L ->
-            180L
+        minutes < 240L -> 180L
 
-        minutes < 300L ->
-            300L
+        minutes < 300L -> 300L
 
-        else ->
-            600L
+        else -> 600L
     }
+
 }
 
-
-/*
- * ============================================================
- * FORMAT DELAY
- * ============================================================
- */
+// ============================================================
+// FORMAT DELAY
+// ============================================================
 
 fun formatDelay(
     seconds: Long
@@ -3019,9 +4296,7 @@ fun formatDelay(
             val minutes =
                 seconds / 60L
 
-            if (
-                minutes == 1L
-            ) {
+            if (minutes == 1L) {
 
                 "1 min"
 
@@ -3042,14 +4317,12 @@ fun formatDelay(
             "$minutes min $remaining sec"
         }
     }
+
 }
 
-
-/*
- * ============================================================
- * DELAY DIALOG
- * ============================================================
- */
+// ============================================================
+// DELAY DIALOG
+// ============================================================
 
 @Composable
 fun DelayDialog(
@@ -3069,22 +4342,18 @@ fun DelayDialog(
 ) {
 
     var automatic by remember {
-
         mutableStateOf(false)
     }
 
     var hours by remember {
-
         mutableStateOf("0")
     }
 
     var minutes by remember {
-
         mutableStateOf("0")
     }
 
     var seconds by remember {
-
         mutableStateOf("3")
     }
 
@@ -3104,8 +4373,10 @@ fun DelayDialog(
         title = {
 
             Text(
+
                 text =
                     "Protect $appName",
+
                 fontWeight =
                     FontWeight.Bold
             )
@@ -3118,9 +4389,7 @@ fun DelayDialog(
                 Text(
 
                     text =
-                        "Choose how long Dontscroll " +
-                                "should make you wait before " +
-                                "unlocking this app.",
+                        "Choose how long Dontscroll should make you wait before unlocking this app.",
 
                     color =
                         MaterialTheme
@@ -3189,9 +4458,7 @@ fun DelayDialog(
                             Modifier.fillMaxWidth(),
 
                         shape =
-                            RoundedCornerShape(
-                                16.dp
-                            ),
+                            RoundedCornerShape(18.dp),
 
                         color =
                             MaterialTheme
@@ -3202,14 +4469,11 @@ fun DelayDialog(
                         Column(
 
                             modifier =
-                                Modifier.padding(
-                                    16.dp
-                                )
+                                Modifier.padding(16.dp)
                         ) {
 
                             Text(
-                                text =
-                                    "Today's usage"
+                                "Today's usage"
                             )
 
                             Text(
@@ -3238,7 +4502,12 @@ fun DelayDialog(
                                     }",
 
                                 fontWeight =
-                                    FontWeight.Bold
+                                    FontWeight.Bold,
+
+                                color =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .primary
                             )
                         }
                     }
@@ -3251,9 +4520,7 @@ fun DelayDialog(
                             Modifier.fillMaxWidth(),
 
                         horizontalArrangement =
-                            Arrangement.spacedBy(
-                                6.dp
-                            )
+                            Arrangement.spacedBy(6.dp)
                     ) {
 
                         OutlinedTextField(
@@ -3270,14 +4537,10 @@ fun DelayDialog(
                             },
 
                             modifier =
-                                Modifier.weight(
-                                    1f
-                                ),
+                                Modifier.weight(1f),
 
                             label = {
-                                Text(
-                                    "Hours"
-                                )
+                                Text("Hours")
                             },
 
                             singleLine =
@@ -3298,14 +4561,10 @@ fun DelayDialog(
                             },
 
                             modifier =
-                                Modifier.weight(
-                                    1f
-                                ),
+                                Modifier.weight(1f),
 
                             label = {
-                                Text(
-                                    "Min"
-                                )
+                                Text("Min")
                             },
 
                             singleLine =
@@ -3326,14 +4585,10 @@ fun DelayDialog(
                             },
 
                             modifier =
-                                Modifier.weight(
-                                    1f
-                                ),
+                                Modifier.weight(1f),
 
                             label = {
-                                Text(
-                                    "Sec"
-                                )
+                                Text("Sec")
                             },
 
                             singleLine =
@@ -3383,9 +4638,7 @@ fun DelayDialog(
                     ) {
 
                         onSave(
-
                             delaySeconds,
-
                             automatic
                         )
                     }
@@ -3393,7 +4646,11 @@ fun DelayDialog(
             ) {
 
                 Text(
-                    "Save"
+                    "Save",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .primary
                 )
             }
         },
@@ -3401,32 +4658,191 @@ fun DelayDialog(
         dismissButton = {
 
             TextButton(
-
                 onClick =
                     onDismiss
             ) {
 
-                Text(
-                    "Cancel"
-                )
+                Text("Cancel")
             }
         }
     )
+
 }
 
+// ============================================================
+// BREAK DURATION DIALOG
+// ============================================================
 
-/*
- * ============================================================
- * APPS LOADING
- * ============================================================
- */
+@Composable
+private fun BreakDurationDialog(
+
+    onDismiss: () -> Unit,
+
+    onSelected: (Long) -> Unit
+
+) {
+
+    AlertDialog(
+
+        onDismissRequest =
+            onDismiss,
+
+        title = {
+
+            Text(
+
+                "Take a break",
+
+                fontWeight =
+                    FontWeight.Bold
+            )
+        },
+
+        text = {
+
+            Column {
+
+                Text(
+                    "How long should Dontscroll stop blocking apps?"
+                )
+
+                Spacer(
+                    Modifier.height(14.dp)
+                )
+
+                BreakOption(
+                    "15 minutes"
+                ) {
+                    onSelected(
+                        15L * 60L * 1_000L
+                    )
+                }
+
+                BreakOption(
+                    "30 minutes"
+                ) {
+                    onSelected(
+                        30L * 60L * 1_000L
+                    )
+                }
+
+                BreakOption(
+                    "1 hour"
+                ) {
+                    onSelected(
+                        60L * 60L * 1_000L
+                    )
+                }
+
+                BreakOption(
+                    "2 hours"
+                ) {
+                    onSelected(
+                        2L * 60L * 60L * 1_000L
+                    )
+                }
+            }
+        },
+
+        confirmButton = {},
+
+        dismissButton = {
+
+            TextButton(
+                onClick =
+                    onDismiss
+            ) {
+
+                Text("Cancel")
+            }
+        }
+    )
+
+}
+
+// ============================================================
+// BREAK OPTION
+// ============================================================
+
+@Composable
+private fun BreakOption(
+
+    text: String,
+
+    onClick: () -> Unit
+
+) {
+
+    PrimaryButton(
+
+        text =
+            text,
+
+        onClick =
+            onClick
+    )
+
+}
+
+// ============================================================
+// BREAK TIME
+// ============================================================
+
+private fun formatRemainingBreak(
+    breakUntil: Long
+): String {
+
+    val remaining =
+        (
+                breakUntil -
+                        System.currentTimeMillis()
+                )
+            .coerceAtLeast(0L)
+
+    val totalSeconds =
+        remaining / 1_000L
+
+    val hours =
+        totalSeconds / 3_600L
+
+    val minutes =
+        (
+                totalSeconds % 3_600L
+                ) / 60L
+
+    val seconds =
+        totalSeconds % 60L
+
+    return when {
+
+        hours > 0L ->
+            "${hours}h ${minutes}m"
+
+        minutes > 0L ->
+            "${minutes}m ${seconds}s"
+
+        else ->
+            "${seconds}s"
+    }
+
+}
+
+// ============================================================
+// LOADING
+// ============================================================
 
 @Composable
 fun DontscrollAppsLoadingScreen() {
 
     Surface(
+
         modifier =
-            Modifier.fillMaxSize()
+            Modifier.fillMaxSize(),
+
+        color =
+            MaterialTheme
+                .colorScheme
+                .background
     ) {
 
         Column(
@@ -3440,32 +4856,7 @@ fun DontscrollAppsLoadingScreen() {
                 Arrangement.Center
         ) {
 
-            Box(
-
-                modifier =
-                    Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(
-                            MaterialTheme
-                                .colorScheme
-                                .primaryContainer
-                        ),
-
-                contentAlignment =
-                    Alignment.Center
-            ) {
-
-                Text(
-                    text = "DS",
-                    fontWeight =
-                        FontWeight.ExtraBold,
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary
-                )
-            }
+            AppLogo()
 
             Spacer(
                 Modifier.height(18.dp)
@@ -3501,4 +4892,5 @@ fun DontscrollAppsLoadingScreen() {
             )
         }
     }
+
 }

@@ -15,81 +15,44 @@ import androidx.compose.ui.graphics.Color
 private val DontscrollDarkColorScheme =
     darkColorScheme(
 
-        // MAROON
-        primary =
-            MaroonLight,
+        primary = MaroonLight,
+        onPrimary = Color.White,
 
-        onPrimary =
-            Color.White,
+        primaryContainer = MaroonContainer,
+        onPrimaryContainer = MaroonContainerLight,
 
-        primaryContainer =
-            MaroonContainer,
+        // No teal.
+        secondary = RoseLight,
+        onSecondary = Color(0xFF3B0718),
 
-        onPrimaryContainer =
-            MaroonContainerLight,
+        secondaryContainer = Color(0xFF5A1C30),
+        onSecondaryContainer = Color(0xFFFFD9E2),
 
+        tertiary = PeachLight,
+        onTertiary = Color(0xFF3A0E06),
 
-        // TURQUOISE
-        secondary =
-            TurquoiseLight,
+        tertiaryContainer = Color(0xFF633021),
+        onTertiaryContainer = Color(0xFFFFDBD0),
 
-        onSecondary =
-            Color(0xFF003735),
+        background = DarkBackground,
+        onBackground = DarkOnBackground,
 
-        secondaryContainer =
-            TurquoiseContainer,
+        surface = DarkSurface,
+        onSurface = DarkOnSurface,
 
-        onSecondaryContainer =
-            TurquoiseContainerLight,
+        surfaceVariant = DarkSurfaceVariant,
+        onSurfaceVariant = DarkOnSurfaceVariant,
 
+        surfaceContainer = DarkSurfaceContainer,
 
-        // BACKGROUND
-        background =
-            DarkBackground,
+        outline = DarkOutline,
+        outlineVariant = DarkOutlineVariant,
 
-        onBackground =
-            DarkOnBackground,
+        error = Color(0xFFFFB4AB),
+        onError = Color(0xFF690005),
 
-
-        // SURFACE
-        surface =
-            DarkSurface,
-
-        onSurface =
-            DarkOnSurface,
-
-
-        // SURFACE VARIANT
-        surfaceVariant =
-            DarkSurfaceVariant,
-
-        onSurfaceVariant =
-            DarkOnSurfaceVariant,
-
-        surfaceContainer =
-            DarkSurfaceContainer,
-
-
-        // OUTLINES
-        outline =
-            DarkOutline,
-
-        outlineVariant =
-            DarkOutlineVariant,
-
-
-        // ERROR
-        error =
-            Color(0xFFFFB4AB),
-
-        onError =
-            Color(0xFF690005),
-
-        errorContainer =
-            Color(0xFF93000A),
-
-        onErrorContainer =
-            Color(0xFFFFDAD6)
+        errorContainer = Color(0xFF93000A),
+        onErrorContainer = Color(0xFFFFDAD6)
     )
 
 
@@ -100,90 +63,59 @@ private val DontscrollDarkColorScheme =
 private val DontscrollLightColorScheme =
     lightColorScheme(
 
-        // MAROON
-        primary =
-            Maroon,
+        primary = Maroon,
+        onPrimary = Color.White,
 
-        onPrimary =
-            Color.White,
+        primaryContainer = MaroonContainerLight,
+        onPrimaryContainer = MaroonDark,
 
-        primaryContainer =
-            MaroonContainerLight,
+        // No teal.
+        secondary = RoseDark,
+        onSecondary = Color.White,
 
-        onPrimaryContainer =
-            MaroonDark,
+        secondaryContainer = Color(0xFFFFD9E2),
+        onSecondaryContainer = Color(0xFF4A0B20),
 
+        tertiary = PeachDark,
+        onTertiary = Color.White,
 
-        // TURQUOISE
-        secondary =
-            TurquoiseDark,
+        tertiaryContainer = Color(0xFFFFDBD0),
+        onTertiaryContainer = Color(0xFF4A160D),
 
-        onSecondary =
-            Color.White,
+        background = LightBackground,
+        onBackground = LightOnBackground,
 
-        secondaryContainer =
-            TurquoiseContainerLight,
+        surface = LightSurface,
+        onSurface = LightOnSurface,
 
-        onSecondaryContainer =
-            Color(0xFF003735),
+        surfaceVariant = LightSurfaceVariant,
+        onSurfaceVariant = LightOnSurfaceVariant,
 
+        surfaceContainer = LightSurfaceContainer,
 
-        // BACKGROUND
-        background =
-            LightBackground,
+        outline = LightOutline,
+        outlineVariant = LightOutlineVariant,
 
-        onBackground =
-            LightOnBackground,
+        error = Color(0xFFBA1A1A),
+        onError = Color.White,
 
-
-        // SURFACE
-        surface =
-            LightSurface,
-
-        onSurface =
-            LightOnSurface,
-
-
-        // SURFACE VARIANT
-        surfaceVariant =
-            LightSurfaceVariant,
-
-        onSurfaceVariant =
-            LightOnSurfaceVariant,
-
-        surfaceContainer =
-            LightSurfaceContainer,
-
-
-        // OUTLINES
-        outline =
-            LightOutline,
-
-        outlineVariant =
-            LightOutlineVariant,
-
-
-        // ERROR
-        error =
-            Color(0xFFBA1A1A),
-
-        onError =
-            Color.White,
-
-        errorContainer =
-            Color(0xFFFFDAD6),
-
-        onErrorContainer =
-            Color(0xFF410002)
+        errorContainer = Color(0xFFFFDAD6),
+        onErrorContainer = Color(0xFF410002)
     )
 
 
+// ============================================================
+// THEME
+// ============================================================
+
 @Composable
 fun DontscrollTheme(
+
     darkTheme: Boolean =
         isSystemInDarkTheme(),
 
     content: @Composable () -> Unit
+
 ) {
 
     val colorScheme =
@@ -198,13 +130,10 @@ fun DontscrollTheme(
 
     MaterialTheme(
 
-        colorScheme =
-            colorScheme,
+        colorScheme = colorScheme,
 
-        typography =
-            DontscrollTypography,
+        typography = DontscrollTypography,
 
-        content =
-            content
+        content = content
     )
 }

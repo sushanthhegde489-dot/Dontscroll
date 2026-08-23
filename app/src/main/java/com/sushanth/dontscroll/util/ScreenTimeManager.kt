@@ -2,9 +2,11 @@ package com.sushanth.dontscroll.util
 
 import android.annotation.SuppressLint
 import android.app.AppOpsManager
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Process
 import android.provider.Settings
 import java.util.Calendar
@@ -17,10 +19,6 @@ object ScreenTimeManager {
         val totalTimeMillis: Long
     )
 
-    /**
-     * Checks whether the user has enabled
-     * Usage Access for Dontscroll.
-     */
     fun hasUsageAccess(
         context: Context
     ): Boolean {
@@ -37,21 +35,15 @@ object ScreenTimeManager {
                 context.packageName
             )
 
-        return mode ==
-                AppOpsManager.MODE_ALLOWED
+        return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    /**
-     * Opens Android Usage Access settings.
-     */
     fun openUsageSettings(
         context: Context
     ) {
 
         val intent =
-            Intent(
-                Settings.ACTION_USAGE_ACCESS_SETTINGS
-            )
+            Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
 
         intent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK
@@ -61,82 +53,13 @@ object ScreenTimeManager {
     }
 
     /**
-     * Returns today's application usage.
+     * Returns only apps that actually entered the foreground today.
      *
-     * This method first checks the special Usage Access
-     * setting. If the user has not enabled it, an empty
-     * list is returned.
-     *
-     * Resets at midnight and shows only foreground usage.
+     * UsageStats.queryUsageStats() can contain packages that aren't
+     * meaningful user-facing foreground apps, so this implementation
+     * reconstructs usage from foreground/background events instead.
      */
-    /*fun getTodayUsage(
-        context: Context
-    ): List<AppUsage> {
-
-        if (!hasUsageAccess(context)) {
-            return emptyList()
-        }
-
-        val usageStatsManager =
-            context.getSystemService(
-                Context.USAGE_STATS_SERVICE
-            ) as UsageStatsManager
-
-        val calendar =
-            Calendar.getInstance()
-
-        calendar.set(
-            Calendar.HOUR_OF_DAY,
-            0
-        )
-
-        calendar.set(
-            Calendar.MINUTE,
-            0
-        )
-
-        calendar.set(
-            Calendar.SECOND,
-            0
-        )
-
-        calendar.set(
-            Calendar.MILLISECOND,
-            0
-        )
-
-        val startTime =
-            calendar.timeInMillis
-
-        val endTime =
-            System.currentTimeMillis()
-
-        val stats =
-            queryUsageStats(
-                usageStatsManager,
-                startTime,
-                endTime
-            )
-
-        return stats
-            .asSequence()
-            .filter {
-                it.totalTimeInForeground > 0L
-            }
-            .sortByDescending {
-                it.totalTimeInForeground
-            }
-            .map {
-                AppUsage(
-                    packageName =
-                        it.packageName,
-
-                    totalTimeMillis =
-                        it.totalTimeInForeground
-                )
-            }
-            .toList()
-    }*/
+    @SuppressLint("MissingPermission")
     fun getTodayUsage(
         context: Context
     ): List<AppUsage> {
@@ -179,55 +102,133 @@ object ScreenTimeManager {
         val endTime =
             System.currentTimeMillis()
 
-        val stats =
-            queryUsageStats(
-                usageStatsManager,
+        val events =
+            usageStatsManager.queryEvents(
                 startTime,
                 endTime
             )
 
-        return stats
+        val event =
+            UsageEvents.Event()
+
+        /*
+         * package -> timestamp when it entered foreground
+         */
+        val foregroundStarts =
+            mutableMapOf<String, Long>()
+
+        /*
+         * package -> accumulated foreground duration
+         */
+        val usage =
+            mutableMapOf<String, Long>()
+
+        while (events.hasNextEvent()) {
+
+            events.getNextEvent(event)
+
+            val packageName =
+                event.packageName
+
+            if (packageName.isNullOrBlank()) {
+                continue
+            }
+
+            when (event.eventType) {
+
+                UsageEvents.Event.ACTIVITY_RESUMED -> {
+
+                    /*
+                     * If another RESUMED event arrives for the same
+                     * package before it was paused, don't overwrite
+                     * the original start time.
+                     */
+                    if (!foregroundStarts.containsKey(packageName)) {
+                        foregroundStarts[packageName] =
+                            event.timeStamp
+                    }
+                }
+
+                UsageEvents.Event.ACTIVITY_PAUSED -> {
+
+                    val start =
+                        foregroundStarts.remove(packageName)
+
+                    if (start != null) {
+
+                        val duration =
+                            (event.timeStamp - start)
+                                .coerceAtLeast(0L)
+
+                        usage[packageName] =
+                            (usage[packageName] ?: 0L) +
+                                    duration
+                    }
+                }
+
+                /*
+                 * Android can report these depending on the device /
+                 * Android version. Treat them as foreground transitions.
+                 */
+                UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+
+                    if (!foregroundStarts.containsKey(packageName)) {
+                        foregroundStarts[packageName] =
+                            event.timeStamp
+                    }
+                }
+
+                UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+
+                    val start =
+                        foregroundStarts.remove(packageName)
+
+                    if (start != null) {
+
+                        val duration =
+                            (event.timeStamp - start)
+                                .coerceAtLeast(0L)
+
+                        usage[packageName] =
+                            (usage[packageName] ?: 0L) +
+                                    duration
+                    }
+                }
+            }
+        }
+
+        /*
+         * If an app is still in the foreground when the query ends,
+         * close its session at "now".
+         */
+        foregroundStarts.forEach { (packageName, start) ->
+
+            val duration =
+                (endTime - start)
+                    .coerceAtLeast(0L)
+
+            usage[packageName] =
+                (usage[packageName] ?: 0L) +
+                        duration
+        }
+
+        return usage
             .asSequence()
             .filter {
-                it.totalTimeInForeground > 0L
+                it.value > 0L
             }
             .sortedByDescending {
-                it.totalTimeInForeground
+                it.value
             }
             .map {
                 AppUsage(
-                    packageName =
-                        it.packageName,
-
-                    totalTimeMillis =
-                        it.totalTimeInForeground
+                    packageName = it.key,
+                    totalTimeMillis = it.value
                 )
             }
             .toList()
     }
-    /**
-     * Android's UsageStats API is protected by the
-     * special Usage Access setting.
-     *
-     * hasUsageAccess() is checked before this function
-     * is called, so suppress the normal runtime-permission
-     * Lint warning here.
-     */
-    @SuppressLint("MissingPermission")
-    private fun queryUsageStats(
-        usageStatsManager: UsageStatsManager,
-        startTime: Long,
-        endTime: Long
-    ) =
-        usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_DAILY,
-            startTime,
-            endTime
-        ) ?: emptyList()
 
-    /**
-     * Returns today's usage for one package.
-     */
     fun getAppTodayUsage(
         context: Context,
         packageName: String
@@ -245,9 +246,6 @@ object ScreenTimeManager {
             ?: 0L
     }
 
-    /**
-     * Converts milliseconds to readable screen time.
-     */
     fun formatDuration(
         millis: Long
     ): String {
