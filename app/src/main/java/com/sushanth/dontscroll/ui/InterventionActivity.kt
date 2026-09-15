@@ -2,7 +2,7 @@ package com.sushanth.dontscroll.ui
 
 import android.content.Intent
 import android.os.Bundle
-import android.os.SystemClock
+import android.util.Log
 
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -23,6 +23,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,12 +43,16 @@ import com.sushanth.dontscroll.service.DoomGuardAccessibilityService
 import com.sushanth.dontscroll.ui.theme.DontscrollTheme
 import com.sushanth.dontscroll.util.ScreenTimeManager
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
 
 import java.util.Locale
 
 
-class InterventionActivity : ComponentActivity() {
+class InterventionActivity :
+    ComponentActivity() {
 
     companion object {
 
@@ -60,32 +65,73 @@ class InterventionActivity : ComponentActivity() {
         const val EXTRA_DELAY_SECONDS =
             "delay_seconds"
 
+        const val EXTRA_SESSION_ID =
+            "session_id"
+
         private const val UNLOCK_DURATION_MILLIS =
             5_000L
+
+        @Volatile
+        private var currentInstance:
+                InterventionActivity? =
+            null
+
+        fun closeFromService() {
+
+            currentInstance?.let { activity ->
+
+                activity.runOnUiThread {
+
+                    if (
+                        !activity.isFinishing
+                    ) {
+
+                        activity.finishAndRemoveTask()
+                    }
+                }
+            }
+        }
     }
 
+    private var targetPackageName:
+            String? by mutableStateOf(null)
 
-    private var targetPackageName: String? by
-    mutableStateOf(null)
+    private var displayName:
+            String by mutableStateOf("This app")
 
-    private var displayName: String by
-    mutableStateOf("This app")
+    private var delaySeconds:
+            Long by mutableLongStateOf(900L)
 
-    private var delaySeconds: Long by
-    mutableLongStateOf(900L)
+    private var isUnlocking:
+            Boolean by mutableStateOf(false)
 
-    private var isUnlocking: Boolean by
-    mutableStateOf(false)
+    private var sessionId:
+            Long by mutableLongStateOf(0L)
 
+    private var interventionScreenActive:
+            Boolean by mutableStateOf(false)
+
+    // =========================================================
+    // CREATE
+    // =========================================================
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
 
-        super.onCreate(savedInstanceState)
+        super.onCreate(
+            savedInstanceState
+        )
 
-        if (!readIntent(intent)) {
-            finish()
+        currentInstance =
+            this
+
+        if (
+            !readIntent(intent)
+        ) {
+
+            finishAndRemoveTask()
+
             return
         }
 
@@ -94,9 +140,7 @@ class InterventionActivity : ComponentActivity() {
             object : OnBackPressedCallback(true) {
 
                 override fun handleOnBackPressed() {
-                    /*
-                     * Intentionally disabled.
-                     */
+                    navigateHomeAndFinish()
                 }
             }
         )
@@ -108,7 +152,9 @@ class InterventionActivity : ComponentActivity() {
                 val currentPackage =
                     targetPackageName
 
-                if (currentPackage != null) {
+                if (
+                    currentPackage != null
+                ) {
 
                     InterventionScreen(
 
@@ -121,6 +167,12 @@ class InterventionActivity : ComponentActivity() {
                         delaySeconds =
                             delaySeconds,
 
+                        sessionId =
+                            sessionId,
+
+                        isScreenActive =
+                            interventionScreenActive,
+
                         isUnlocking =
                             isUnlocking,
 
@@ -129,6 +181,11 @@ class InterventionActivity : ComponentActivity() {
                             unlockAndOpenApp(
                                 currentPackage
                             )
+                        },
+
+                        onDismiss = {
+
+                            navigateHomeAndFinish()
                         }
                     )
                 }
@@ -136,26 +193,131 @@ class InterventionActivity : ComponentActivity() {
         }
     }
 
+    private fun navigateHomeAndFinish() {
+
+        try {
+
+            val homeIntent =
+                Intent(
+                    Intent.ACTION_MAIN
+                ).apply {
+
+                    addCategory(
+                        Intent.CATEGORY_HOME
+                    )
+
+                    flags =
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+
+            startActivity(
+                homeIntent
+            )
+
+        } catch (exception: Exception) {
+
+            Log.e(
+                "DoomGuard",
+                "Failed to navigate to Home",
+                exception
+            )
+
+        } finally {
+
+            finishAndRemoveTask()
+        }
+    }
+
+    // =========================================================
+    // RESUME
+    // =========================================================
+
+    override fun onResume() {
+
+        super.onResume()
+
+        currentInstance =
+            this
+
+        interventionScreenActive =
+            true
+
+        DoomGuardAccessibilityService
+            .notifyInterventionScreenVisible(
+                targetPackageName
+            )
+    }
+
+    // =========================================================
+    // PAUSE
+    // =========================================================
+
+    override fun onPause() {
+
+        /*
+         * Stop counting immediately when the intervention is no
+         * longer in the foreground. onStop below handles the
+         * service-side "user left intervention" state.
+         */
+        interventionScreenActive =
+            false
+
+        super.onPause()
+    }
+
+    // =========================================================
+    // STOP
+    // =========================================================
+
+    override fun onStop() {
+
+        super.onStop()
+
+        interventionScreenActive =
+            false
+
+        DoomGuardAccessibilityService
+            .notifyInterventionScreenHidden(
+                targetPackageName
+            )
+    }
+
+    // =========================================================
+    // NEW INTENT
+    // =========================================================
 
     override fun onNewIntent(
         intent: Intent?
     ) {
 
-        super.onNewIntent(intent)
+        super.onNewIntent(
+            intent
+        )
 
-        if (intent == null) {
+        if (
+            intent == null
+        ) {
             return
         }
 
-        setIntent(intent)
+        setIntent(
+            intent
+        )
 
-        if (isUnlocking) {
+        if (
+            isUnlocking
+        ) {
             return
         }
 
-        readIntent(intent)
+        readIntent(
+            intent
+        )
     }
 
+    // =========================================================
+    // READ INTENT
+    // =========================================================
 
     private fun readIntent(
         intent: Intent
@@ -166,7 +328,10 @@ class InterventionActivity : ComponentActivity() {
                 EXTRA_PACKAGE_NAME
             )
 
-        if (incomingPackage.isNullOrBlank()) {
+        if (
+            incomingPackage.isNullOrBlank()
+        ) {
+
             return false
         }
 
@@ -186,7 +351,16 @@ class InterventionActivity : ComponentActivity() {
                 900L
             )
 
-        if (incomingDelay <= 0L) {
+        val incomingSessionId =
+            intent.getLongExtra(
+                EXTRA_SESSION_ID,
+                0L
+            )
+
+        if (
+            incomingDelay <= 0L
+        ) {
+
             return false
         }
 
@@ -199,27 +373,33 @@ class InterventionActivity : ComponentActivity() {
         delaySeconds =
             incomingDelay
 
+        sessionId =
+            incomingSessionId
+
         isUnlocking =
             false
 
         return true
     }
 
+    // =========================================================
+    // UNLOCK
+    // =========================================================
 
     private fun unlockAndOpenApp(
         targetPackage: String
     ) {
 
-        if (isUnlocking) {
+        if (
+            isUnlocking
+        ) {
             return
         }
 
         /*
-         * If blocking was turned off or a break was started
-         * while this screen was open, do not create another
-         * intervention state.
+         * Blocking may have been disabled while this screen
+         * was visible.
          */
-
         if (
             !DoomGuardAccessibilityService
                 .shouldBlock(
@@ -228,30 +408,9 @@ class InterventionActivity : ComponentActivity() {
                 )
         ) {
 
-            val intent =
-                packageManager
-                    .getLaunchIntentForPackage(
-                        targetPackage
-                    )
-
-            if (intent != null) {
-
-                try {
-
-                    intent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    )
-
-                    startActivity(intent)
-
-                } catch (
-                    exception: Exception
-                ) {
-
-                    exception.printStackTrace()
-                }
-            }
+            openTargetApplication(
+                targetPackage
+            )
 
             finishAndRemoveTask()
 
@@ -261,15 +420,27 @@ class InterventionActivity : ComponentActivity() {
         isUnlocking =
             true
 
-
+        /*
+         * CRITICAL:
+         *
+         * This clears interventionTargetPackage inside the
+         * service BEFORE the target app is opened.
+         *
+         * Therefore the target app's foreground event is treated
+         * as a legitimate unlock rather than an intervention
+         * restart.
+         */
         DoomGuardAccessibilityService
             .completeIntervention(
-                context = this,
-                packageName = targetPackage,
+                context =
+                    this,
+
+                packageName =
+                    targetPackage,
+
                 durationMillis =
                     UNLOCK_DURATION_MILLIS
             )
-
 
         val launchIntent =
             packageManager
@@ -277,7 +448,9 @@ class InterventionActivity : ComponentActivity() {
                     targetPackage
                 )
 
-        if (launchIntent == null) {
+        if (
+            launchIntent == null
+        ) {
 
             isUnlocking =
                 false
@@ -285,19 +458,12 @@ class InterventionActivity : ComponentActivity() {
             return
         }
 
-
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP
         )
 
-
         try {
-
-            DoomGuardAccessibilityService
-                .prepareForTargetAppReturn(
-                    targetPackage
-                )
 
             startActivity(
                 launchIntent
@@ -309,21 +475,73 @@ class InterventionActivity : ComponentActivity() {
             exception: Exception
         ) {
 
-            exception.printStackTrace()
+            Log.e(
+                "DoomGuard",
+                "Unable to launch target app",
+                exception
+            )
 
             isUnlocking =
                 false
         }
     }
 
+    // =========================================================
+    // OPEN TARGET
+    // =========================================================
 
-    override fun onPause() {
+    private fun openTargetApplication(
+        packageName: String
+    ) {
 
-        super.onPause()
+        val launchIntent =
+            packageManager
+                .getLaunchIntentForPackage(
+                    packageName
+                )
+                ?: return
 
-        /*
-         * Service owns intervention state.
-         */
+        launchIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+        )
+
+        try {
+
+            startActivity(
+                launchIntent
+            )
+
+        } catch (
+            exception: Exception
+        ) {
+
+            Log.e(
+                "DoomGuard",
+                "Unable to launch target app",
+                exception
+            )
+        }
+    }
+
+    // =========================================================
+    // DESTROY
+    // =========================================================
+
+    override fun onDestroy() {
+
+        interventionScreenActive =
+            false
+
+        if (
+            currentInstance === this
+        ) {
+
+            currentInstance =
+                null
+        }
+
+        super.onDestroy()
     }
 }
 
@@ -343,9 +561,15 @@ fun InterventionScreen(
 
     delaySeconds: Long,
 
+    sessionId: Long,
+
+    isScreenActive: Boolean,
+
     isUnlocking: Boolean,
 
-    onUnlocked: () -> Unit
+    onUnlocked: () -> Unit,
+
+    onDismiss: () -> Unit
 
 ) {
 
@@ -355,7 +579,8 @@ fun InterventionScreen(
     var remaining by
     remember(
         packageName,
-        delaySeconds
+        delaySeconds,
+        sessionId
     ) {
 
         mutableLongStateOf(
@@ -373,75 +598,74 @@ fun InterventionScreen(
         )
     }
 
+    // =========================================================
+    // SCREEN TIME (Calculated asynchronously once upon display)
+    // =========================================================
 
-    /*
-     * ========================================================
-     * SCREEN TIME
-     * ========================================================
-     */
+    LaunchedEffect(
+        packageName,
+        isScreenActive
+    ) {
 
-    LaunchedEffect(packageName) {
+        if (!isScreenActive) {
+            return@LaunchedEffect
+        }
 
-        while (true) {
-
+        withContext(Dispatchers.IO) {
             screenTime =
                 ScreenTimeManager
                     .getAppTodayUsage(
                         context,
                         packageName
                     )
-
-            delay(1_000L)
         }
     }
 
-
-    /*
-     * ========================================================
-     * COUNTDOWN
-     * ========================================================
-     */
+    // =========================================================
+    // COUNTDOWN
+    // =========================================================
 
     LaunchedEffect(
         packageName,
-        delaySeconds
+        delaySeconds,
+        sessionId,
+        isScreenActive
     ) {
 
-        val endTime =
-            SystemClock.elapsedRealtime() +
-                    delaySeconds * 1_000L
+        /*
+         * Count only while the intervention Activity is actually
+         * active. Leaving the screen cancels this effect and resets
+         * remaining to the full configured delay.
+         */
+        if (!isScreenActive) {
 
-        while (true) {
+            remaining =
+                delaySeconds
 
-            val millisRemaining =
-                endTime -
-                        SystemClock.elapsedRealtime()
+            return@LaunchedEffect
+        }
 
-            if (millisRemaining <= 0L) {
+        remaining =
+            delaySeconds
 
-                remaining =
-                    0L
+        while (remaining > 0L) {
 
-                break
+            delay(1.seconds)
+
+            if (!isScreenActive) {
+                return@LaunchedEffect
             }
 
             remaining =
-                (
-                        millisRemaining +
-                                999L
-                        ) / 1_000L
-
-            delay(100L)
+                (remaining - 1L).coerceAtLeast(0L)
         }
     }
-
 
     val isReady =
         remaining <= 0L
 
     val colors =
         MaterialTheme.colorScheme
-
 
     Column(
 
@@ -470,7 +694,9 @@ fun InterventionScreen(
 
             Spacer(
                 modifier =
-                    Modifier.height(18.dp)
+                    Modifier.height(
+                        18.dp
+                    )
             )
 
             Text(
@@ -490,7 +716,6 @@ fun InterventionScreen(
                     TextAlign.Center
             )
         }
-
 
         Column(
             horizontalAlignment =
@@ -516,15 +741,22 @@ fun InterventionScreen(
 
             Spacer(
                 modifier =
-                    Modifier.height(28.dp)
+                    Modifier.height(
+                        28.dp
+                    )
             )
 
             Text(
 
                 text =
-                    if (isReady) {
+                    if (
+                        isReady
+                    ) {
+
                         "00:00:00"
+
                     } else {
+
                         formatCountdown(
                             remaining
                         )
@@ -544,7 +776,9 @@ fun InterventionScreen(
 
             Spacer(
                 modifier =
-                    Modifier.height(10.dp)
+                    Modifier.height(
+                        10.dp
+                    )
             )
 
             Text(
@@ -576,22 +810,29 @@ fun InterventionScreen(
 
             Spacer(
                 modifier =
-                    Modifier.height(30.dp)
+                    Modifier.height(
+                        30.dp
+                    )
             )
 
             Card(
 
                 modifier =
-                    Modifier.fillMaxWidth(),
+                    Modifier
+                        .fillMaxWidth(),
 
                 shape =
-                    RoundedCornerShape(20.dp),
+                    RoundedCornerShape(
+                        20.dp
+                    ),
 
                 colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            colors.surfaceContainer
-                    )
+                    CardDefaults
+                        .cardColors(
+                            containerColor =
+                                colors
+                                    .surfaceContainer
+                        )
             ) {
 
                 Column(
@@ -619,12 +860,15 @@ fun InterventionScreen(
                                 .labelSmall,
 
                         color =
-                            colors.onSurfaceVariant
+                            colors
+                                .onSurfaceVariant
                     )
 
                     Spacer(
                         modifier =
-                            Modifier.height(4.dp)
+                            Modifier.height(
+                                4.dp
+                            )
                     )
 
                     Text(
@@ -661,7 +905,6 @@ fun InterventionScreen(
             }
         }
 
-
         Column(
             horizontalAlignment =
                 Alignment.CenterHorizontally
@@ -679,10 +922,14 @@ fun InterventionScreen(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .height(60.dp),
+                        .height(
+                            60.dp
+                        ),
 
                 shape =
-                    RoundedCornerShape(20.dp)
+                    RoundedCornerShape(
+                        20.dp
+                    )
             ) {
 
                 Text(
@@ -710,9 +957,34 @@ fun InterventionScreen(
                 )
             }
 
+            if (!isReady && !isUnlocking) {
+
+                Spacer(
+                    modifier =
+                        Modifier.height(
+                            8.dp
+                        )
+                )
+
+                TextButton(
+                    onClick = onDismiss,
+                    modifier =
+                        Modifier.fillMaxWidth()
+                ) {
+
+                    Text(
+                        text = "I won't scroll · Go Home",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+
             Spacer(
                 modifier =
-                    Modifier.height(12.dp)
+                    Modifier.height(
+                        12.dp
+                    )
             )
         }
     }

@@ -11,6 +11,7 @@ import androidx.core.content.edit
 
 import com.sushanth.dontscroll.data.AppDatabase
 import com.sushanth.dontscroll.ui.InterventionActivity
+import com.sushanth.dontscroll.util.ScreenTimeManager
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,17 +22,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
 
 
 class DoomGuardAccessibilityService :
     AccessibilityService() {
 
-
-    /*
-     * =========================================================
-     * COROUTINE
-     * =========================================================
-     */
+    // =========================================================
+    // COROUTINE
+    // =========================================================
 
     private val serviceJob =
         SupervisorJob()
@@ -41,57 +40,123 @@ class DoomGuardAccessibilityService :
             Dispatchers.IO + serviceJob
         )
 
-
-    /*
-     * =========================================================
-     * DATABASE
-     * =========================================================
-     */
+    // =========================================================
+    // DATABASE
+    // =========================================================
 
     private lateinit var database: AppDatabase
 
     private var blockedAppsJob: Job? =
         null
 
-
-    /*
-     * =========================================================
-     * BLOCKED PACKAGES
-     * =========================================================
-     */
+    // =========================================================
+    // BLOCKED PACKAGES
+    // =========================================================
 
     @Volatile
     private var blockedPackages: Set<String> =
         emptySet()
 
+    // =========================================================
+    // FOREGROUND STATE MACHINE
+    // =========================================================
 
-    /*
-     * =========================================================
-     * FOREGROUND PACKAGE
-     * =========================================================
+    /**
+     * The last package that the service considers to be the
+     * actual external foreground application.
+     *
+     * IMPORTANT:
+     *
+     * This represents APP-LEVEL foreground state.
+     *
+     * It does NOT change when Instagram opens:
+     * - comments
+     * - reels
+     * - profiles
+     * - share dialogs
+     * - keyboards
+     * - internal activities
+     *
+     * because all of those can still belong to the same package.
      */
-
     @Volatile
     private var foregroundPackage: String? =
         null
 
-
-    /*
-     * =========================================================
-     * EXPECTED RETURN
-     * =========================================================
+    /**
+     * Activity class associated with the last accepted external
+     * foreground event. Same-package Activity/window changes are
+     * intentionally never treated as new app entries.
      */
-
     @Volatile
-    private var waitingForPackageReturn: String? =
+    private var foregroundActivityClass: String? =
         null
 
-
-    /*
-     * =========================================================
-     * USAGE TIMER
-     * =========================================================
+    /**
+     * Last package received from an external accessibility
+     * window-state event.
+     *
+     * This is intentionally separate from foregroundPackage.
      */
+    @Volatile
+    private var lastObservedPackage: String? =
+        null
+
+    /**
+     * Monotonic timestamp of the most recent actual package
+     * transition.
+     */
+    @Volatile
+    private var lastForegroundTransitionTime: Long =
+        0L
+
+    /**
+     * When true, InterventionActivity has disappeared and we
+     * are waiting for Android to tell us what application
+     * actually became foreground.
+     *
+     * This is the ONLY situation where seeing the target
+     * package again immediately after an intervention means
+     * "restart the intervention".
+     *
+     * This prevents normal same-app navigation from triggering
+     * an intervention.
+     */
+    @Volatile
+    private var awaitingInterventionReturn =
+        false
+
+    /**
+     * Package that owns the intervention currently being
+     * enforced.
+     */
+    @Volatile
+    private var interventionTargetPackage: String? =
+        null
+
+    // =========================================================
+    // ACTIVE INTERVENTION
+    // =========================================================
+
+    /**
+     * True when InterventionActivity is currently visible.
+     */
+    @Volatile
+    private var interventionScreenVisible =
+        false
+
+    /**
+     * Prevents the service from interpreting an immediate
+     * lifecycle transition as a real user action before the
+     * intervention has actually appeared.
+     */
+    @Volatile
+    private var interventionScreenHasShown =
+        false
+
+    // =========================================================
+    // CONTINUOUS USAGE
+    // =========================================================
 
     @Volatile
     private var trackedPackage: String? =
@@ -104,22 +169,33 @@ class DoomGuardAccessibilityService :
     private var usageMonitorJob: Job? =
         null
 
+    // =========================================================
+    // INTERVENTION LAUNCH COOLDOWN
+    // =========================================================
 
-    /*
-     * =========================================================
-     * DUPLICATE INTERVENTION PROTECTION
-     * =========================================================
+    /**
+     * Protects against duplicate launch attempts caused by
+     * multiple asynchronous paths.
      */
-
     private val lastInterventionLaunch =
         mutableMapOf<String, Long>()
 
+    // =========================================================
+    // SERVICE LIFECYCLE
+    // =========================================================
 
-    /*
-     * =========================================================
-     * SERVICE CONNECTED
-     * =========================================================
-     */
+    override fun onCreate() {
+
+        super.onCreate()
+
+        instance =
+            this
+
+        Log.d(
+            TAG,
+            "DoomGuardAccessibilityService created"
+        )
+    }
 
     override fun onServiceConnected() {
 
@@ -133,8 +209,26 @@ class DoomGuardAccessibilityService :
         foregroundPackage =
             null
 
-        waitingForPackageReturn =
+        foregroundActivityClass =
             null
+
+        lastObservedPackage =
+            null
+
+        lastForegroundTransitionTime =
+            0L
+
+        awaitingInterventionReturn =
+            false
+
+        interventionTargetPackage =
+            null
+
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
 
         stopUsageTimer()
 
@@ -145,16 +239,13 @@ class DoomGuardAccessibilityService :
 
         Log.d(
             TAG,
-            "DoomGuard accessibility service connected"
+            "Accessibility service connected"
         )
     }
 
-
-    /*
-     * =========================================================
-     * BLOCKED APP OBSERVER
-     * =========================================================
-     */
+    // =========================================================
+    // BLOCKED APP OBSERVER
+    // =========================================================
 
     private fun observeBlockedApps() {
 
@@ -190,16 +281,24 @@ class DoomGuardAccessibilityService :
 
                             stopUsageTimer()
                         }
+
+                        val interventionTarget =
+                            interventionTargetPackage
+
+                        if (
+                            interventionTarget != null &&
+                            interventionTarget !in blockedPackages
+                        ) {
+
+                            cancelCurrentIntervention()
+                        }
                     }
             }
     }
 
-
-    /*
-     * =========================================================
-     * ACCESSIBILITY EVENT
-     * =========================================================
-     */
+    // =========================================================
+    // ACCESSIBILITY EVENT
+    // =========================================================
 
     override fun onAccessibilityEvent(
         event: AccessibilityEvent?
@@ -210,24 +309,16 @@ class DoomGuardAccessibilityService :
         }
 
         /*
-         * ONLY react to real window changes.
+         * We only care about package-level foreground
+         * transitions.
          *
-         * This prevents:
-         *
-         * Instagram comments
-         * scrolling
-         * popups
-         * focus changes
-         * buttons
-         *
-         * from being treated as app launches.
+         * AccessibilityService can produce many other event
+         * types for internal UI changes.
          */
-
         if (
             event.eventType !=
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
         ) {
-
             return
         }
 
@@ -241,67 +332,48 @@ class DoomGuardAccessibilityService :
             return
         }
 
+        val activityClassName =
+            event.className
+                ?.toString()
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+
+        val ourPackage =
+            applicationContext.packageName
+
+        // =====================================================
+        // OUR OWN APP
+        // =====================================================
 
         /*
-         * =====================================================
-         * GLOBAL BLOCKING CHECK
-         * =====================================================
+         * InterventionActivity belongs to our application.
          *
-         * If blocking is OFF or a break is active, the service
-         * still receives accessibility events but DOES NOTHING.
+         * Its lifecycle callbacks are authoritative for the
+         * intervention itself, so do not treat our package as
+         * an external foreground application.
          */
-
-        if (
-            !isBlockingCurrentlyActive(
-                applicationContext
-            )
-        ) {
-
-            stopUsageTimer()
-
-            /*
-             * Keep tracking which real package is foreground.
-             * This prevents a stale transition from being treated
-             * as a new app entry when blocking is later enabled.
-             */
-
-            if (
-                !isTransientSystemPackage(
-                    packageName
-                ) &&
-                packageName !=
-                applicationContext.packageName
-            ) {
-
-                foregroundPackage =
-                    packageName
-            }
-
-            return
-        }
-
-
-        /*
-         * =====================================================
-         * OUR OWN APP
-         * =====================================================
-         */
-
         if (
             packageName ==
-            applicationContext.packageName
+            ourPackage
         ) {
 
             return
         }
 
+        // =====================================================
+        // TRANSIENT SYSTEM UI
+        // =====================================================
 
         /*
-         * =====================================================
-         * TRANSIENT SYSTEM WINDOW
-         * =====================================================
+         * Android can temporarily report SystemUI,
+         * permission controllers, keyboards, intent resolvers,
+         * etc.
+         *
+         * These must not become foreground applications in our
+         * state machine.
          */
-
         if (
             isTransientSystemPackage(
                 packageName
@@ -311,195 +383,104 @@ class DoomGuardAccessibilityService :
             return
         }
 
+        // =====================================================
+        // REAL PACKAGE TRANSITION
+        // =====================================================
 
-        handleForegroundPackage(
-            packageName
+        handleExternalForegroundPackage(
+            packageName,
+            activityClassName
         )
     }
 
+    // =========================================================
+    // FOREGROUND PACKAGE STATE MACHINE
+    // =========================================================
 
-    /*
-     * =========================================================
-     * FOREGROUND HANDLER
-     * =========================================================
-     */
-
-    private fun handleForegroundPackage(
-        packageName: String
+    private fun handleExternalForegroundPackage(
+        packageName: String,
+        activityClassName: String?
     ) {
-
-        /*
-         * Global blocking could have been disabled between
-         * accessibility callbacks.
-         */
-
-        if (
-            !isBlockingCurrentlyActive(
-                applicationContext
-            )
-        ) {
-
-            stopUsageTimer()
-
-            foregroundPackage =
-                packageName
-
-            return
-        }
-
 
         val previousPackage =
             foregroundPackage
 
+        val previousActivityClass =
+            foregroundActivityClass
+
+        lastObservedPackage =
+            packageName
+
+        // =====================================================
+        // SAME APP = IGNORE WINDOW/ACTIVITY CHANGES
+        // =====================================================
 
         /*
-         * =====================================================
-         * SAME PACKAGE
-         * =====================================================
+         * TYPE_WINDOW_STATE_CHANGED is noisy. An app can emit this
+         * event when it switches activities, opens a dialog, shows
+         * a share sheet, changes its internal window, etc.
          *
-         * This is what prevents Instagram comments and other
-         * internal navigation from retriggering the intervention.
+         * Blocking is package based, so the package is the authority
+         * for deciding whether the user actually left one app and
+         * entered another app.
+         *
+         * IMPORTANT:
+         *
+         * If previousPackage == packageName, this is NOT a new app
+         * entry. Never start or restart an intervention from this
+         * event, even when the Activity class changed.
          */
-
         if (
             previousPackage ==
             packageName
         ) {
 
-            return
-        }
-
-
-        /*
-         * =====================================================
-         * EXPECTED RETURN
-         * =====================================================
-         */
-
-        val expectedReturn =
-            waitingForPackageReturn
-
-        if (
-            expectedReturn ==
-            packageName
-        ) {
-
-            waitingForPackageReturn =
-                null
-
-            foregroundPackage =
-                packageName
+            // Record the newest activity only for diagnostics/state.
+            foregroundActivityClass =
+                activityClassName
 
             Log.d(
                 TAG,
-                "Returned to app: $packageName"
+                "Ignoring same-app window/activity change: " +
+                        "$previousPackage/$previousActivityClass -> " +
+                        "$packageName/$activityClassName"
             )
-
-
-            /*
-             * Check global state again.
-             */
-
-            if (
-                !isBlockingCurrentlyActive(
-                    applicationContext
-                )
-            ) {
-
-                stopUsageTimer()
-                return
-            }
-
-
-            val state =
-                readState(
-                    packageName
-                )
-
-
-            if (
-                state.interventionActive
-            ) {
-
-                showExistingIntervention(
-                    packageName
-                )
-
-                return
-            }
-
-
-            if (
-                state.unlockUntil >
-                System.currentTimeMillis()
-            ) {
-
-                startUsageTimer(
-                    packageName
-                )
-
-                return
-            }
-
-
-            /*
-             * Unlock expired.
-             *
-             * Do NOT instantly intervene here.
-             *
-             * The next genuine foreground transition will
-             * trigger the next intervention.
-             */
 
             return
         }
 
-
-        /*
-         * =====================================================
-         * NORMAL APP TRANSITION
-         * =====================================================
-         */
+        // =====================================================
+        // REAL APP TRANSITION
+        // =====================================================
 
         foregroundPackage =
             packageName
 
+        foregroundActivityClass =
+            activityClassName
+
+        lastForegroundTransitionTime =
+            SystemClock.elapsedRealtime()
+
         Log.d(
             TAG,
-            "Foreground: " +
-                    "$previousPackage -> $packageName"
+            "Foreground app transition: " +
+                    "$previousPackage/$previousActivityClass -> " +
+                    "$packageName/$activityClassName"
         )
 
-        stopUsageTimer()
-
-
-        /*
-         * Not protected.
-         */
+        // =====================================================
+        // RETURN TO AN UNFINISHED INTERVENTION
+        // =====================================================
 
         if (
-            packageName !in blockedPackages
+            awaitingInterventionReturn &&
+            interventionTargetPackage ==
+            packageName
         ) {
 
-            return
-        }
-
-
-        val state =
-            readState(
-                packageName
-            )
-
-
-        /*
-         * =====================================================
-         * ACTIVE INTERVENTION
-         * =====================================================
-         */
-
-        if (
-            state.interventionActive
-        ) {
+            awaitingInterventionReturn =
+                false
 
             showExistingIntervention(
                 packageName
@@ -508,43 +489,82 @@ class DoomGuardAccessibilityService :
             return
         }
 
-
         /*
-         * =====================================================
-         * CURRENTLY UNLOCKED
-         * =====================================================
+         * Leaving the blocked app does NOT cancel its unfinished
+         * intervention. The state remains active until the user
+         * returns to the same package and gets a fresh session.
          */
-
         if (
-            state.unlockUntil >
-            System.currentTimeMillis()
+            awaitingInterventionReturn
         ) {
 
-            startUsageTimer(
+            Log.d(
+                TAG,
+                "Intervention pending while outside target: " +
+                        "${interventionTargetPackage} -> $packageName"
+            )
+        }
+
+        // =====================================================
+        // GLOBAL BLOCKING
+        // =====================================================
+
+        if (
+            !isBlockingCurrentlyActive(
+                applicationContext
+            )
+        ) {
+
+            stopUsageTimer()
+            return
+        }
+
+        stopUsageTimer()
+
+        if (
+            packageName !in blockedPackages
+        ) {
+            return
+        }
+
+        val state =
+            readState(packageName)
+
+        if (
+            state.interventionActive
+        ) {
+
+            interventionTargetPackage =
+                packageName
+
+            interventionScreenVisible =
+                false
+
+            interventionScreenHasShown =
+                false
+
+            showExistingIntervention(
                 packageName
             )
 
             return
         }
 
+        if (
+            state.unlockUntil >
+            System.currentTimeMillis()
+        ) {
 
-        /*
-         * =====================================================
-         * NEED INTERVENTION
-         * =====================================================
-         */
+            startUsageTimer(packageName)
+            return
+        }
 
-        showInitialIntervention(
-            packageName
-        )
+        showInitialIntervention(packageName)
     }
 
-
-    /*
-     * =========================================================
-     * INITIAL INTERVENTION
-     * =========================================================
-     */
+    // =========================================================
+    // INITIAL INTERVENTION
+    // =========================================================
 
     private fun showInitialIntervention(
         packageName: String
@@ -555,7 +575,6 @@ class DoomGuardAccessibilityService :
                 applicationContext
             )
         ) {
-
             return
         }
 
@@ -563,27 +582,30 @@ class DoomGuardAccessibilityService :
             foregroundPackage !=
             packageName
         ) {
-
             return
         }
 
         if (
             packageName !in blockedPackages
         ) {
-
             return
         }
-
 
         val state =
             readState(
                 packageName
             )
 
+        // =====================================================
+        // EXISTING INTERVENTION
+        // =====================================================
 
         if (
             state.interventionActive
         ) {
+
+            interventionTargetPackage =
+                packageName
 
             showExistingIntervention(
                 packageName
@@ -592,6 +614,9 @@ class DoomGuardAccessibilityService :
             return
         }
 
+        // =====================================================
+        // STILL UNLOCKED
+        // =====================================================
 
         if (
             state.unlockUntil >
@@ -605,6 +630,9 @@ class DoomGuardAccessibilityService :
             return
         }
 
+        // =====================================================
+        // LOAD DATABASE ENTRY
+        // =====================================================
 
         scope.launch {
 
@@ -618,51 +646,64 @@ class DoomGuardAccessibilityService :
                         )
                         ?: return@launch
 
-
                 if (
                     blocked.unlockDelaySeconds <= 0L
                 ) {
-
                     return@launch
                 }
 
+                val effectiveDelaySeconds =
+                    getEffectiveUnlockDelaySeconds(
+                        blocked
+                    )
 
                 withContext(
                     Dispatchers.Main.immediate
                 ) {
+
+                    // -------------------------------------------------
+                    // REVALIDATE EVERYTHING ON MAIN
+                    // -------------------------------------------------
 
                     if (
                         !isBlockingCurrentlyActive(
                             applicationContext
                         )
                     ) {
-
                         return@withContext
                     }
-
 
                     if (
                         foregroundPackage !=
                         packageName
                     ) {
-
                         return@withContext
                     }
 
+                    if (
+                        packageName !in blockedPackages
+                    ) {
+                        return@withContext
+                    }
 
                     val currentState =
                         readState(
                             packageName
                         )
 
-
                     if (
                         currentState.interventionActive
                     ) {
 
+                        interventionTargetPackage =
+                            packageName
+
+                        showExistingIntervention(
+                            packageName
+                        )
+
                         return@withContext
                     }
-
 
                     if (
                         currentState.unlockUntil >
@@ -676,21 +717,32 @@ class DoomGuardAccessibilityService :
                         return@withContext
                     }
 
-
-                    /*
-                     * CLAIM intervention BEFORE launching Activity.
-                     */
+                    // -------------------------------------------------
+                    // CLAIM INTERVENTION BEFORE LAUNCH
+                    // -------------------------------------------------
 
                     setInterventionActive(
                         packageName
                     )
+
+                    interventionTargetPackage =
+                        packageName
+
+                    interventionScreenVisible =
+                        false
+
+                    interventionScreenHasShown =
+                        false
+
+                    awaitingInterventionReturn =
+                        false
 
                     stopUsageTimer()
 
                     launchInterventionActivity(
                         packageName,
                         blocked.displayName,
-                        blocked.unlockDelaySeconds
+                        effectiveDelaySeconds
                     )
                 }
 
@@ -705,12 +757,9 @@ class DoomGuardAccessibilityService :
         }
     }
 
-
-    /*
-     * =========================================================
-     * EXISTING INTERVENTION
-     * =========================================================
-     */
+    // =========================================================
+    // EXISTING INTERVENTION
+    // =========================================================
 
     private fun showExistingIntervention(
         packageName: String
@@ -721,7 +770,6 @@ class DoomGuardAccessibilityService :
                 applicationContext
             )
         ) {
-
             return
         }
 
@@ -729,10 +777,23 @@ class DoomGuardAccessibilityService :
             foregroundPackage !=
             packageName
         ) {
-
             return
         }
 
+        if (
+            packageName !in blockedPackages
+        ) {
+            return
+        }
+
+        interventionTargetPackage =
+            packageName
+
+        /*
+         * We are actively enforcing this intervention again.
+         */
+        awaitingInterventionReturn =
+            false
 
         scope.launch {
 
@@ -746,14 +807,16 @@ class DoomGuardAccessibilityService :
                         )
                         ?: return@launch
 
-
                 if (
                     blocked.unlockDelaySeconds <= 0L
                 ) {
-
                     return@launch
                 }
 
+                val effectiveDelaySeconds =
+                    getEffectiveUnlockDelaySeconds(
+                        blocked
+                    )
 
                 withContext(
                     Dispatchers.Main.immediate
@@ -764,29 +827,40 @@ class DoomGuardAccessibilityService :
                             applicationContext
                         )
                     ) {
-
                         return@withContext
                     }
-
 
                     if (
                         foregroundPackage !=
                         packageName
                     ) {
-
                         return@withContext
                     }
-
 
                     val state =
                         readState(
                             packageName
                         )
 
+                    // -------------------------------------------------
+                    // STATE WAS ALREADY CLEARED
+                    // -------------------------------------------------
 
                     if (
                         !state.interventionActive
                     ) {
+
+                        interventionTargetPackage =
+                            null
+
+                        interventionScreenVisible =
+                            false
+
+                        interventionScreenHasShown =
+                            false
+
+                        awaitingInterventionReturn =
+                            false
 
                         if (
                             state.unlockUntil >
@@ -801,21 +875,25 @@ class DoomGuardAccessibilityService :
                         return@withContext
                     }
 
+                    // -------------------------------------------------
+                    // ALREADY VISIBLE
+                    // -------------------------------------------------
 
                     if (
-                        isLaunchOnCooldown(
-                            packageName
-                        )
+                        interventionScreenVisible
                     ) {
-
                         return@withContext
                     }
 
+                    // -------------------------------------------------
+                    // RESTART
+                    // -------------------------------------------------
 
                     launchInterventionActivity(
                         packageName,
                         blocked.displayName,
-                        blocked.unlockDelaySeconds
+                        effectiveDelaySeconds,
+                        ignoreCooldown = true
                     )
                 }
 
@@ -830,357 +908,15 @@ class DoomGuardAccessibilityService :
         }
     }
 
-
-    /*
-     * =========================================================
-     * USAGE TIMER
-     * =========================================================
-     */
-
-    private fun startUsageTimer(
-        packageName: String
-    ) {
-
-        if (
-            !isBlockingCurrentlyActive(
-                applicationContext
-            )
-        ) {
-
-            return
-        }
-
-        if (
-            foregroundPackage !=
-            packageName
-        ) {
-
-            return
-        }
-
-        if (
-            packageName !in blockedPackages
-        ) {
-
-            return
-        }
-
-
-        val state =
-            readState(
-                packageName
-            )
-
-
-        if (
-            state.interventionActive
-        ) {
-
-            return
-        }
-
-
-        if (
-            state.unlockUntil <=
-            System.currentTimeMillis()
-        ) {
-
-            return
-        }
-
-
-        if (
-            trackedPackage ==
-            packageName &&
-            trackedStartTime > 0L
-        ) {
-
-            return
-        }
-
-
-        usageMonitorJob?.cancel()
-
-
-        trackedPackage =
-            packageName
-
-        trackedStartTime =
-            SystemClock.elapsedRealtime()
-
-
-        Log.d(
-            TAG,
-            "Started continuous 15-minute timer: $packageName"
-        )
-
-
-        usageMonitorJob =
-            scope.launch {
-
-                monitorUsage(
-                    packageName
-                )
-            }
-    }
-
-
-    /*
-     * =========================================================
-     * MONITOR USAGE
-     * =========================================================
-     */
-
-    private suspend fun monitorUsage(
-        packageName: String
-    ) {
-
-        while (true) {
-
-            delay(
-                USAGE_CHECK_INTERVAL
-            )
-
-
-            /*
-             * Blocking disabled or break started.
-             */
-
-            if (
-                !isBlockingCurrentlyActive(
-                    applicationContext
-                )
-            ) {
-
-                Log.d(
-                    TAG,
-                    "Blocking disabled/break active"
-                )
-
-                return
-            }
-
-
-            /*
-             * User left app.
-             */
-
-            if (
-                foregroundPackage !=
-                packageName
-            ) {
-
-                return
-            }
-
-
-            if (
-                packageName !in blockedPackages
-            ) {
-
-                return
-            }
-
-
-            val state =
-                readState(
-                    packageName
-                )
-
-
-            if (
-                state.interventionActive
-            ) {
-
-                return
-            }
-
-
-            if (
-                state.unlockUntil <=
-                System.currentTimeMillis()
-            ) {
-
-                return
-            }
-
-
-            val elapsed =
-                SystemClock.elapsedRealtime() -
-                        trackedStartTime
-
-
-            /*
-             * 15 MINUTES CONTINUOUS USE
-             */
-
-            if (
-                elapsed >=
-                CONSECUTIVE_USAGE_LIMIT
-            ) {
-
-                Log.d(
-                    TAG,
-                    "15-minute continuous limit reached: $packageName"
-                )
-
-
-                triggerConsecutiveIntervention(
-                    packageName
-                )
-
-                return
-            }
-        }
-    }
-
-
-    /*
-     * =========================================================
-     * SECONDARY INTERVENTION
-     * =========================================================
-     */
-
-    private suspend fun triggerConsecutiveIntervention(
-        packageName: String
-    ) {
-
-        if (
-            !isBlockingCurrentlyActive(
-                applicationContext
-            )
-        ) {
-
-            return
-        }
-
-        if (
-            foregroundPackage !=
-            packageName
-        ) {
-
-            return
-        }
-
-        if (
-            packageName !in blockedPackages
-        ) {
-
-            return
-        }
-
-
-        val state =
-            readState(
-                packageName
-            )
-
-
-        if (
-            state.interventionActive
-        ) {
-
-            return
-        }
-
-
-        if (
-            state.unlockUntil <=
-            System.currentTimeMillis()
-        ) {
-
-            return
-        }
-
-
-        val blocked =
-            database
-                .blockedAppDao()
-                .getByPackage(
-                    packageName
-                )
-                ?: return
-
-
-        if (
-            blocked.unlockDelaySeconds <= 0L
-        ) {
-
-            return
-        }
-
-
-        withContext(
-            Dispatchers.Main.immediate
-        ) {
-
-            if (
-                !isBlockingCurrentlyActive(
-                    applicationContext
-                )
-            ) {
-
-                return@withContext
-            }
-
-            if (
-                foregroundPackage !=
-                packageName
-            ) {
-
-                return@withContext
-            }
-
-
-            val currentState =
-                readState(
-                    packageName
-                )
-
-
-            if (
-                currentState.interventionActive
-            ) {
-
-                return@withContext
-            }
-
-
-            if (
-                currentState.unlockUntil <=
-                System.currentTimeMillis()
-            ) {
-
-                return@withContext
-            }
-
-
-            setInterventionActive(
-                packageName
-            )
-
-            stopUsageTimer()
-
-
-            launchInterventionActivity(
-                packageName,
-                blocked.displayName,
-                blocked.unlockDelaySeconds
-            )
-        }
-    }
-
-
-    /*
-     * =========================================================
-     * LAUNCH INTERVENTION
-     * =========================================================
-     */
+    // =========================================================
+    // LAUNCH INTERVENTION
+    // =========================================================
 
     private fun launchInterventionActivity(
         packageName: String,
         displayName: String,
-        delaySeconds: Long
+        delaySeconds: Long,
+        ignoreCooldown: Boolean = false
     ) {
 
         if (
@@ -1188,7 +924,6 @@ class DoomGuardAccessibilityService :
                 applicationContext
             )
         ) {
-
             return
         }
 
@@ -1196,34 +931,27 @@ class DoomGuardAccessibilityService :
             foregroundPackage !=
             packageName
         ) {
-
             return
         }
 
-
-        val now =
-            SystemClock.elapsedRealtime()
-
-
-        val previousLaunch =
-            synchronized(
-                lastInterventionLaunch
-            ) {
-
-                lastInterventionLaunch[
-                    packageName
-                ] ?: 0L
-            }
-
+        if (
+            interventionScreenVisible
+        ) {
+            return
+        }
 
         if (
-            now - previousLaunch <
-            INTERVENTION_LAUNCH_COOLDOWN
+            !ignoreCooldown &&
+            isLaunchOnCooldown(
+                packageName
+            )
         ) {
 
             return
         }
 
+        val now =
+            SystemClock.elapsedRealtime()
 
         synchronized(
             lastInterventionLaunch
@@ -1234,6 +962,20 @@ class DoomGuardAccessibilityService :
             ] = now
         }
 
+        interventionTargetPackage =
+            packageName
+
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
+
+        awaitingInterventionReturn =
+            false
+
+        val sessionId =
+            SystemClock.elapsedRealtimeNanos()
 
         val intent =
             Intent(
@@ -1261,8 +1003,12 @@ class DoomGuardAccessibilityService :
                     InterventionActivity.EXTRA_DELAY_SECONDS,
                     delaySeconds
                 )
-            }
 
+                putExtra(
+                    InterventionActivity.EXTRA_SESSION_ID,
+                    sessionId
+                )
+            }
 
         try {
 
@@ -1271,7 +1017,9 @@ class DoomGuardAccessibilityService :
                 "Launching intervention: $packageName"
             )
 
-            startActivity(intent)
+            startActivity(
+                intent
+            )
 
         } catch (exception: Exception) {
 
@@ -1281,6 +1029,18 @@ class DoomGuardAccessibilityService :
                 exception
             )
 
+            interventionTargetPackage =
+                null
+
+            interventionScreenVisible =
+                false
+
+            interventionScreenHasShown =
+                false
+
+            awaitingInterventionReturn =
+                false
+
             clearIntervention(
                 applicationContext,
                 packageName
@@ -1288,34 +1048,525 @@ class DoomGuardAccessibilityService :
         }
     }
 
+    // =========================================================
+    // ACTIVITY VISIBLE
+    // =========================================================
 
-    /*
-     * =========================================================
-     * PREPARE TARGET RETURN
-     * =========================================================
-     */
-
-    private fun prepareForTargetAppReturn(
+    private fun markInterventionScreenVisible(
         packageName: String
     ) {
 
-        waitingForPackageReturn =
-            packageName
+        val target =
+            interventionTargetPackage
 
-        stopUsageTimer()
+        if (
+            target != packageName
+        ) {
+            return
+        }
+
+        interventionScreenVisible =
+            true
+
+        interventionScreenHasShown =
+            true
+
+        awaitingInterventionReturn =
+            false
+
 
         Log.d(
             TAG,
-            "Waiting for return to $packageName"
+            "Intervention screen VISIBLE for $packageName"
         )
     }
 
+    // =========================================================
+    // ACTIVITY HIDDEN
+    // =========================================================
 
-    /*
-     * =========================================================
-     * READ PER-APP STATE
-     * =========================================================
+    private fun markInterventionScreenHidden(
+        packageName: String
+    ) {
+
+        if (
+            interventionTargetPackage !=
+            packageName
+        ) {
+            return
+        }
+
+        val state =
+            readState(packageName)
+
+        if (
+            !state.interventionActive
+        ) {
+
+            awaitingInterventionReturn =
+                false
+
+            interventionScreenVisible =
+                false
+
+            interventionScreenHasShown =
+                false
+
+            return
+        }
+
+        /*
+         * Do not treat an onStop that happens before the Activity
+         * ever reached onResume as a real user departure.
+         *
+         * This prevents launch/lifecycle races from putting the
+         * service into "awaiting return" before the intervention
+         * was actually shown.
+         */
+        if (!interventionScreenHasShown) {
+
+            interventionScreenVisible =
+                false
+
+            return
+        }
+
+        /*
+         * The intervention was genuinely visible and the user has
+         * now left it. This is NOT completion.
+         *
+         * Keep interventionActive=true and wait for a REAL external
+         * package transition. Only when the foreground package first
+         * changes away and later changes back to this target do we
+         * restart the intervention.
+         */
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
+
+        awaitingInterventionReturn =
+            true
+
+        Log.d(
+            TAG,
+            "Intervention hidden; waiting for real app return: $packageName"
+        )
+    }
+
+    // =========================================================
+    // CANCEL INTERVENTION
+    // =========================================================
+
+    private fun cancelCurrentIntervention() {
+
+        val target =
+            interventionTargetPackage
+
+        awaitingInterventionReturn =
+            false
+
+        interventionTargetPackage =
+            null
+
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
+
+        stopUsageTimer()
+
+        InterventionActivity.closeFromService()
+
+        if (target != null) {
+            clearIntervention(
+                applicationContext,
+                target
+            )
+        }
+
+        Log.d(
+            TAG,
+            "Intervention cancelled: $target"
+        )
+    }
+
+    // =========================================================
+    // CONTINUOUS USAGE TIMER
+    // =========================================================
+
+    private fun startUsageTimer(
+        packageName: String
+    ) {
+
+        if (
+            !isBlockingCurrentlyActive(
+                applicationContext
+            )
+        ) {
+            return
+        }
+
+        if (
+            foregroundPackage !=
+            packageName
+        ) {
+            return
+        }
+
+        if (
+            packageName !in blockedPackages
+        ) {
+            return
+        }
+
+        val state =
+            readState(
+                packageName
+            )
+
+        if (
+            state.interventionActive
+        ) {
+            return
+        }
+
+        if (
+            state.unlockUntil <=
+            System.currentTimeMillis()
+        ) {
+            return
+        }
+
+        if (
+            trackedPackage ==
+            packageName &&
+            trackedStartTime > 0L
+        ) {
+            return
+        }
+
+        usageMonitorJob?.cancel()
+
+        trackedPackage =
+            packageName
+
+        trackedStartTime =
+            SystemClock.elapsedRealtime()
+
+        Log.d(
+            TAG,
+            "Started continuous-use timer: $packageName"
+        )
+
+        usageMonitorJob =
+            scope.launch {
+
+                monitorUsage(
+                    packageName
+                )
+            }
+    }
+
+    // =========================================================
+    // CONTINUOUS USAGE MONITOR
+    // =========================================================
+
+    private suspend fun monitorUsage(
+        packageName: String
+    ) {
+
+        while (true) {
+
+            delay(
+                USAGE_CHECK_INTERVAL
+            )
+
+            // -------------------------------------------------
+            // BLOCKING
+            // -------------------------------------------------
+
+            if (
+                !isBlockingCurrentlyActive(
+                    applicationContext
+                )
+            ) {
+                return
+            }
+
+            // -------------------------------------------------
+            // REAL APP FOREGROUND
+            // -------------------------------------------------
+
+            if (
+                foregroundPackage !=
+                packageName
+            ) {
+                return
+            }
+
+            // -------------------------------------------------
+            // BLOCKED APP
+            // -------------------------------------------------
+
+            if (
+                packageName !in blockedPackages
+            ) {
+                return
+            }
+
+            // -------------------------------------------------
+            // INTERVENTION
+            // -------------------------------------------------
+
+            val state =
+                readState(
+                    packageName
+                )
+
+            if (
+                state.interventionActive
+            ) {
+                return
+            }
+
+            // -------------------------------------------------
+            // BREAK
+            // -------------------------------------------------
+
+            if (
+                isBreakActive(
+                    applicationContext
+                )
+            ) {
+                return
+            }
+
+            // -------------------------------------------------
+            // ELAPSED TIME
+            // -------------------------------------------------
+
+            val elapsed =
+                SystemClock.elapsedRealtime() -
+                        trackedStartTime
+
+            val limit =
+                getContinuousUsageLimitMillis(
+                    applicationContext,
+                    packageName
+                )
+
+            if (
+                elapsed >=
+                limit
+            ) {
+
+                Log.d(
+                    TAG,
+                    "Continuous-use limit reached: " +
+                            "$packageName " +
+                            "elapsed=$elapsed " +
+                            "limit=$limit"
+                )
+
+                triggerConsecutiveIntervention(
+                    packageName
+                )
+
+                return
+            }
+        }
+    }
+
+    // =========================================================
+    // CONTINUOUS INTERVENTION
+    // =========================================================
+
+    private suspend fun triggerConsecutiveIntervention(
+        packageName: String
+    ) {
+
+        if (
+            !isBlockingCurrentlyActive(
+                applicationContext
+            )
+        ) {
+            return
+        }
+
+        if (
+            foregroundPackage !=
+            packageName
+        ) {
+            return
+        }
+
+        if (
+            packageName !in blockedPackages
+        ) {
+            return
+        }
+
+        val state =
+            readState(
+                packageName
+            )
+
+        if (
+            state.interventionActive
+        ) {
+            return
+        }
+
+        val blocked =
+            database
+                .blockedAppDao()
+                .getByPackage(
+                    packageName
+                )
+                ?: return
+
+        if (
+            blocked.unlockDelaySeconds <= 0L
+        ) {
+            return
+        }
+
+        val effectiveDelaySeconds =
+            getEffectiveUnlockDelaySeconds(
+                blocked
+            )
+
+        withContext(
+            Dispatchers.Main.immediate
+        ) {
+
+            if (
+                !isBlockingCurrentlyActive(
+                    applicationContext
+                )
+            ) {
+                return@withContext
+            }
+
+            if (
+                foregroundPackage !=
+                packageName
+            ) {
+                return@withContext
+            }
+
+            val currentState =
+                readState(
+                    packageName
+                )
+
+            if (
+                currentState.interventionActive
+            ) {
+                return@withContext
+            }
+
+            /*
+             * Claim the intervention BEFORE launching the
+             * Activity.
+             */
+            setInterventionActive(
+                packageName
+            )
+
+            interventionTargetPackage =
+                packageName
+
+            interventionScreenVisible =
+                false
+
+            interventionScreenHasShown =
+                false
+
+            awaitingInterventionReturn =
+                false
+
+            stopUsageTimer()
+
+            launchInterventionActivity(
+                packageName,
+                blocked.displayName,
+                effectiveDelaySeconds
+            )
+        }
+    }
+
+    // =========================================================
+    // EFFECTIVE UNLOCK DELAY
+    // =========================================================
+
+    /**
+     * Automatic delay is calculated when the intervention
+     * starts, using today's usage.
+     *
+     * No previous day's automatic value is persisted.
      */
+    private fun getEffectiveUnlockDelaySeconds(
+        blocked: com.sushanth.dontscroll.data.BlockedApp
+    ): Long {
+
+        if (
+            !blocked.automaticDelay
+        ) {
+            return blocked.unlockDelaySeconds
+        }
+
+        val usageMillis =
+            ScreenTimeManager
+                .getAppTodayUsage(
+                    applicationContext,
+                    blocked.packageName
+                )
+
+        return calculateAutomaticUnlockDelaySeconds(
+            usageMillis
+        )
+    }
+
+    private fun calculateAutomaticUnlockDelaySeconds(
+        screenTimeMillis: Long
+    ): Long {
+
+        val minutes =
+            screenTimeMillis /
+                    60_000L
+
+        return when {
+
+            minutes < 30L ->
+                15L
+
+            minutes < 60L ->
+                30L
+
+            minutes < 120L ->
+                60L
+
+            minutes < 180L ->
+                120L
+
+            minutes < 240L ->
+                180L
+
+            minutes < 300L ->
+                300L
+
+            else ->
+                600L
+        }
+    }
+
+    // =========================================================
+    // STATE
+    // =========================================================
 
     private fun readState(
         packageName: String
@@ -1326,16 +1577,19 @@ class DoomGuardAccessibilityService :
 
         val unlockUntil =
             preferences.getLong(
-                unlockKey(packageName),
+                unlockKey(
+                    packageName
+                ),
                 0L
             )
 
         val interventionActive =
             preferences.getBoolean(
-                interventionKey(packageName),
+                interventionKey(
+                    packageName
+                ),
                 false
             )
-
 
         if (
             unlockUntil > 0L &&
@@ -1346,37 +1600,28 @@ class DoomGuardAccessibilityService :
             preferences.edit {
 
                 putLong(
-                    unlockKey(packageName),
+                    unlockKey(
+                        packageName
+                    ),
                     0L
                 )
             }
 
-
             return PackageState(
                 interventionActive =
                     interventionActive,
-
                 unlockUntil =
                     0L
             )
         }
 
-
         return PackageState(
             interventionActive =
                 interventionActive,
-
             unlockUntil =
                 unlockUntil
         )
     }
-
-
-    /*
-     * =========================================================
-     * SET INTERVENTION ACTIVE
-     * =========================================================
-     */
 
     private fun setInterventionActive(
         packageName: String
@@ -1385,28 +1630,36 @@ class DoomGuardAccessibilityService :
         prefs()
             .edit()
             .putBoolean(
-                interventionKey(packageName),
+                interventionKey(
+                    packageName
+                ),
                 true
             )
             .putLong(
-                unlockKey(packageName),
+                unlockKey(
+                    packageName
+                ),
                 0L
             )
-            .commit()
+            .apply()
 
+        interventionTargetPackage =
+            packageName
+
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
+
+        awaitingInterventionReturn =
+            false
 
         Log.d(
             TAG,
             "Intervention ACTIVE: $packageName"
         )
     }
-
-
-    /*
-     * =========================================================
-     * CLEAR INTERVENTION
-     * =========================================================
-     */
 
     private fun clearIntervention(
         context: Context,
@@ -1420,22 +1673,42 @@ class DoomGuardAccessibilityService :
             )
             .edit()
             .putBoolean(
-                interventionKey(packageName),
+                interventionKey(
+                    packageName
+                ),
                 false
             )
             .putLong(
-                unlockKey(packageName),
+                unlockKey(
+                    packageName
+                ),
                 0L
             )
             .apply()
+
+        Log.d(
+            TAG,
+            "Intervention CLEARED: $packageName"
+        )
     }
 
+    // =========================================================
+    // TIMER HELPERS
+    // =========================================================
 
-    /*
-     * =========================================================
-     * TIMER
-     * =========================================================
-     */
+    private fun stopUsageTimer() {
+
+        usageMonitorJob?.cancel()
+
+        usageMonitorJob =
+            null
+
+        trackedPackage =
+            null
+
+        trackedStartTime =
+            0L
+    }
 
     private fun isLaunchOnCooldown(
         packageName: String
@@ -1459,34 +1732,40 @@ class DoomGuardAccessibilityService :
                 ) < INTERVENTION_LAUNCH_COOLDOWN
     }
 
+    // =========================================================
+    // MANUAL CONTINUOUS TIMER
+    // =========================================================
 
-    private fun stopUsageTimer() {
+    private fun manuallyStartContinuousTimer(
+        packageName: String
+    ) {
 
-        usageMonitorJob?.cancel()
+        if (
+            packageName !in blockedPackages
+        ) {
+            return
+        }
 
-        usageMonitorJob =
-            null
+        foregroundPackage =
+            packageName
 
-        trackedPackage =
-            null
+        lastObservedPackage =
+            packageName
 
-        trackedStartTime =
-            0L
+        startUsageTimer(
+            packageName
+        )
     }
 
-
-    /*
-     * =========================================================
-     * PREFS
-     * =========================================================
-     */
+    // =========================================================
+    // PREFS
+    // =========================================================
 
     private fun prefs() =
         getSharedPreferences(
             PREFS_NAME,
             Context.MODE_PRIVATE
         )
-
 
     private fun interventionKey(
         packageName: String
@@ -1496,7 +1775,6 @@ class DoomGuardAccessibilityService :
                 packageName
     }
 
-
     private fun unlockKey(
         packageName: String
     ): String {
@@ -1505,12 +1783,9 @@ class DoomGuardAccessibilityService :
                 packageName
     }
 
-
-    /*
-     * =========================================================
-     * TRANSIENT SYSTEM PACKAGES
-     * =========================================================
-     */
+    // =========================================================
+    // SYSTEM PACKAGES
+    // =========================================================
 
     private fun isTransientSystemPackage(
         packageName: String
@@ -1553,16 +1828,21 @@ class DoomGuardAccessibilityService :
         }
     }
 
+    // =========================================================
+    // INTERRUPT
+    // =========================================================
 
     override fun onInterrupt() {
         // Nothing required.
     }
 
+    // =========================================================
+    // DESTROY
+    // =========================================================
 
     override fun onDestroy() {
 
         blockedAppsJob?.cancel()
-
         usageMonitorJob?.cancel()
 
         synchronized(
@@ -1571,6 +1851,30 @@ class DoomGuardAccessibilityService :
 
             lastInterventionLaunch.clear()
         }
+
+        foregroundPackage =
+            null
+
+        foregroundActivityClass =
+            null
+
+        lastObservedPackage =
+            null
+
+        lastForegroundTransitionTime =
+            0L
+
+        awaitingInterventionReturn =
+            false
+
+        interventionTargetPackage =
+            null
+
+        interventionScreenVisible =
+            false
+
+        interventionScreenHasShown =
+            false
 
         if (
             instance === this
@@ -1585,49 +1889,30 @@ class DoomGuardAccessibilityService :
         super.onDestroy()
     }
 
-
-    override fun onCreate() {
-
-        super.onCreate()
-
-        instance =
-            this
-    }
-
-
-    /*
-     * =========================================================
-     * DATA
-     * =========================================================
-     */
+    // =========================================================
+    // DATA
+    // =========================================================
 
     private data class PackageState(
-
         val interventionActive: Boolean,
-
         val unlockUntil: Long
     )
 
-
-    /*
-     * =========================================================
-     * COMPANION
-     * =========================================================
-     */
+    // =========================================================
+    // COMPANION
+    // =========================================================
 
     companion object {
 
         private const val TAG =
             "DoomGuard"
 
-
         private const val PREFS_NAME =
             "dontscroll_intervention"
 
-
-        /*
-         * Per-app state.
-         */
+        // =====================================================
+        // PER-APP STATE
+        // =====================================================
 
         private const val KEY_INTERVENTION_ACTIVE_PREFIX =
             "intervention_active_"
@@ -1635,68 +1920,115 @@ class DoomGuardAccessibilityService :
         private const val KEY_UNLOCK_UNTIL_PREFIX =
             "unlock_until_"
 
+        private const val KEY_CONTINUOUS_USAGE_APP_PREFIX =
+            "continuous_usage_app_"
 
-        /*
-         * =====================================================
-         * GLOBAL BLOCKING
-         * =====================================================
-         */
+        // =====================================================
+        // BLOCKING
+        // =====================================================
 
         private const val KEY_BLOCKING_ENABLED =
             "blocking_enabled"
 
-
-        /*
-         * =====================================================
-         * BREAK
-         * =====================================================
-         */
+        // =====================================================
+        // BREAK
+        // =====================================================
 
         private const val KEY_BREAK_UNTIL =
             "break_until"
 
+        // =====================================================
+        // CONTINUOUS USAGE
+        // =====================================================
 
-        /*
-         * =====================================================
-         * COOLDOWN
-         * =====================================================
+        private const val KEY_CONTINUOUS_USAGE_LIMIT_MILLIS =
+            "continuous_usage_limit_millis"
+
+        /**
+         * Default = 5 minutes.
          */
+        private const val DEFAULT_CONTINUOUS_USAGE_LIMIT_MILLIS =
+            5L * 60L * 1_000L
 
-        private const val INTERVENTION_LAUNCH_COOLDOWN =
-            1_500L
+        private fun continuousUsageAppKey(
+            packageName: String
+        ): String {
 
-
-        /*
-         * =====================================================
-         * CONTINUOUS USAGE
-         * =====================================================
-         */
-
-        private const val CONSECUTIVE_USAGE_LIMIT =
-            15L * 60L * 1_000L
-
+            return KEY_CONTINUOUS_USAGE_APP_PREFIX +
+                    packageName
+        }
 
         private const val USAGE_CHECK_INTERVAL =
             1_000L
 
+        // =====================================================
+        // INTERVENTION
+        // =====================================================
 
-        /*
-         * =====================================================
-         * SERVICE INSTANCE
-         * =====================================================
+        /**
+         * Prevents duplicate normal intervention launches.
          */
+        private const val INTERVENTION_LAUNCH_COOLDOWN =
+            1_500L
+
+        /**
+         * Guard against duplicate normal launches triggered by
+         * multiple accessibility/lifecycle callbacks.
+         */
+        // =====================================================
+        // INSTANCE
+        // =====================================================
 
         @Volatile
         private var instance:
                 DoomGuardAccessibilityService? =
             null
 
+        // =====================================================
+        // INTERVENTION SCREEN CALLBACKS
+        // =====================================================
 
-        /*
-         * =====================================================
-         * GLOBAL BLOCKING STATE
-         * =====================================================
-         */
+        fun notifyInterventionScreenVisible(
+            packageName: String?
+        ) {
+
+            val service =
+                instance
+                    ?: return
+
+            if (
+                packageName.isNullOrBlank()
+            ) {
+                return
+            }
+
+            service.markInterventionScreenVisible(
+                packageName
+            )
+        }
+
+        fun notifyInterventionScreenHidden(
+            packageName: String?
+        ) {
+
+            val service =
+                instance
+                    ?: return
+
+            if (
+                packageName.isNullOrBlank()
+            ) {
+                return
+            }
+
+            service.markInterventionScreenHidden(
+                packageName
+            )
+        }
+
+        // =====================================================
+        // BLOCKING
+        // =====================================================
 
         fun isBlockingEnabled(
             context: Context
@@ -1713,7 +2045,6 @@ class DoomGuardAccessibilityService :
                 )
         }
 
-
         fun enableBlocking(
             context: Context
         ) {
@@ -1729,14 +2060,7 @@ class DoomGuardAccessibilityService :
                     true
                 )
                 .apply()
-
-
-            Log.d(
-                TAG,
-                "GLOBAL BLOCKING ENABLED"
-            )
         }
-
 
         fun disableBlocking(
             context: Context
@@ -1754,31 +2078,32 @@ class DoomGuardAccessibilityService :
                 )
                 .apply()
 
-
-            /*
-             * Immediately stop the service's continuous timer.
-             */
-
             instance?.stopUsageTimer()
 
-            Log.d(
-                TAG,
-                "GLOBAL BLOCKING DISABLED"
-            )
+            instance?.awaitingInterventionReturn =
+                false
+
+            instance?.interventionTargetPackage =
+                null
+
+            instance?.interventionScreenVisible =
+                false
+
+            instance?.interventionScreenHasShown =
+                false
+
+            InterventionActivity.closeFromService()
         }
 
-
-        /*
-         * =====================================================
-         * BREAK STATE
-         * =====================================================
-         */
+        // =====================================================
+        // BREAK
+        // =====================================================
 
         fun getBreakUntil(
             context: Context
         ): Long {
 
-            val prefs =
+            val preferences =
                 context
                     .getSharedPreferences(
                         PREFS_NAME,
@@ -1786,15 +2111,10 @@ class DoomGuardAccessibilityService :
                     )
 
             val breakUntil =
-                prefs.getLong(
+                preferences.getLong(
                     KEY_BREAK_UNTIL,
                     0L
                 )
-
-
-            /*
-             * Automatically clean expired breaks.
-             */
 
             if (
                 breakUntil > 0L &&
@@ -1802,7 +2122,7 @@ class DoomGuardAccessibilityService :
                 System.currentTimeMillis()
             ) {
 
-                prefs.edit {
+                preferences.edit {
 
                     putLong(
                         KEY_BREAK_UNTIL,
@@ -1813,10 +2133,8 @@ class DoomGuardAccessibilityService :
                 return 0L
             }
 
-
             return breakUntil
         }
-
 
         fun isBreakActive(
             context: Context
@@ -1824,24 +2142,20 @@ class DoomGuardAccessibilityService :
 
             return getBreakUntil(
                 context
-            ) > System.currentTimeMillis()
+            ) >
+                    System.currentTimeMillis()
         }
-
 
         fun startBreak(
             context: Context,
             durationMillis: Long
         ) {
 
-            if (durationMillis <= 0L) {
+            if (
+                durationMillis <= 0L
+            ) {
                 return
             }
-
-
-            val breakUntil =
-                System.currentTimeMillis() +
-                        durationMillis
-
 
             context
                 .getSharedPreferences(
@@ -1851,24 +2165,16 @@ class DoomGuardAccessibilityService :
                 .edit()
                 .putLong(
                     KEY_BREAK_UNTIL,
-                    breakUntil
+                    System.currentTimeMillis() +
+                            durationMillis
                 )
                 .apply()
 
-
-            /*
-             * Stop any continuous-use timer immediately.
-             */
-
             instance?.stopUsageTimer()
 
-
-            Log.d(
-                TAG,
-                "BREAK STARTED until $breakUntil"
-            )
+            instance?.awaitingInterventionReturn =
+                false
         }
-
 
         fun endBreak(
             context: Context
@@ -1886,71 +2192,50 @@ class DoomGuardAccessibilityService :
                 )
                 .apply()
 
-
             instance?.stopUsageTimer()
 
+            instance?.awaitingInterventionReturn =
+                false
 
-            Log.d(
-                TAG,
-                "BREAK ENDED"
-            )
+            /*
+             * Clear diagnostic transition state so the next
+             * genuine package transition is treated normally.
+             */
+            instance?.lastObservedPackage =
+                null
+
+            instance?.lastForegroundTransitionTime =
+                0L
         }
 
-
-        /*
-         * =====================================================
-         * CENTRAL BLOCKING CHECK
-         * =====================================================
-         *
-         * Every place that can launch an intervention calls
-         * this.
-         */
+        // =====================================================
+        // SHOULD BLOCK
+        // =====================================================
 
         fun shouldBlock(
             context: Context,
             packageName: String? = null
         ): Boolean {
 
-            /*
-             * Global switch.
-             */
-
             if (
-                !isBlockingEnabled(context)
+                !isBlockingEnabled(
+                    context
+                )
             ) {
-
                 return false
             }
 
-
-            /*
-             * Temporary break.
-             */
-
             if (
-                isBreakActive(context)
+                isBreakActive(
+                    context
+                )
             ) {
-
                 return false
             }
-
-
-            /*
-             * If a package was supplied, make sure it is
-             * actually protected.
-             */
 
             if (
                 packageName != null
             ) {
-
-                /*
-                 * We intentionally do not query Room here.
-                 * This method is also called from the UI.
-                 *
-                 * The service's blockedPackages set is the
-                 * authoritative runtime list.
-                 */
 
                 val service =
                     instance
@@ -1965,29 +2250,24 @@ class DoomGuardAccessibilityService :
                 }
             }
 
-
             return true
         }
-
-
-        /*
-         * Internal service check.
-         */
 
         private fun isBlockingCurrentlyActive(
             context: Context
         ): Boolean {
 
-            return isBlockingEnabled(context) &&
-                    !isBreakActive(context)
+            return isBlockingEnabled(
+                context
+            ) &&
+                    !isBreakActive(
+                        context
+                    )
         }
 
-
-        /*
-         * =====================================================
-         * COMPLETE INTERVENTION
-         * =====================================================
-         */
+        // =====================================================
+        // COMPLETE INTERVENTION
+        // =====================================================
 
         fun completeIntervention(
             context: Context,
@@ -1995,13 +2275,15 @@ class DoomGuardAccessibilityService :
             durationMillis: Long
         ) {
 
-            val now =
-                System.currentTimeMillis()
+            if (
+                durationMillis <= 0L
+            ) {
+                return
+            }
 
             val unlockUntil =
-                now +
+                System.currentTimeMillis() +
                         durationMillis
-
 
             context
                 .getSharedPreferences(
@@ -2019,58 +2301,282 @@ class DoomGuardAccessibilityService :
                             packageName,
                     unlockUntil
                 )
-                .commit()
+                .apply()
 
+            /*
+             * CRITICAL:
+             *
+             * The intervention is completed BEFORE the target
+             * app is returned to.
+             */
+            instance?.interventionTargetPackage =
+                null
+
+            instance?.interventionScreenVisible =
+                false
+
+            instance?.interventionScreenHasShown =
+                false
+
+            instance?.awaitingInterventionReturn =
+                false
+
+
+            /*
+             * The protected application is expected to remain
+             * foreground after Continue.
+             */
+            instance?.foregroundPackage =
+                packageName
+
+            instance?.lastObservedPackage =
+                packageName
+
+            instance?.startUsageTimer(
+                packageName
+            )
 
             Log.d(
                 TAG,
                 "Intervention completed: " +
-                        "$packageName unlockUntil=$unlockUntil"
+                        "$packageName " +
+                        "unlockUntil=$unlockUntil"
             )
         }
 
-
-        /*
-         * =====================================================
-         * RETURN TO TARGET APP
-         * =====================================================
-         */
-
-        fun prepareForTargetAppReturn(
-            packageName: String
-        ) {
-
-            instance?.prepareForTargetAppReturn(
-                packageName
-            )
-        }
-
-
-        /*
-         * =====================================================
-         * PUBLIC UNLOCK CHECK
-         * =====================================================
-         */
+        // =====================================================
+        // PACKAGE UNLOCK CHECK
+        // =====================================================
 
         fun isPackageUnlocked(
             context: Context,
             packageName: String
         ): Boolean {
 
-            val unlockUntil =
+            return context
+                .getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+                .getLong(
+                    KEY_UNLOCK_UNTIL_PREFIX +
+                            packageName,
+                    0L
+                ) >
+                    System.currentTimeMillis()
+        }
+
+        // =====================================================
+        // CONTINUOUS TIMER CONFIGURATION
+        // =====================================================
+
+        fun getContinuousUsageLimitMillis(
+            context: Context,
+            packageName: String? = null
+        ): Long {
+
+            val preferences =
+                context.getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+
+            val globalLimit =
+                preferences.getLong(
+                    KEY_CONTINUOUS_USAGE_LIMIT_MILLIS,
+                    DEFAULT_CONTINUOUS_USAGE_LIMIT_MILLIS
+                )
+
+            val appOverride =
+                packageName
+                    ?.takeIf {
+                        it.isNotBlank()
+                    }
+                    ?.let {
+                        preferences.getLong(
+                            continuousUsageAppKey(
+                                it
+                            ),
+                            0L
+                        )
+                    }
+                    ?: 0L
+
+            return if (
+                appOverride > 0L
+            ) {
+
+                appOverride.coerceAtLeast(
+                    1_000L
+                )
+
+            } else {
+
+                globalLimit.coerceAtLeast(
+                    1_000L
+                )
+            }
+        }
+
+        fun setContinuousUsageLimitMinutes(
+            context: Context,
+            minutes: Long
+        ) {
+
+            if (
+                minutes <= 0L
+            ) {
+                return
+            }
+
+            context
+                .getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+                .edit()
+                .putLong(
+                    KEY_CONTINUOUS_USAGE_LIMIT_MILLIS,
+                    minutes *
+                            60L *
+                            1_000L
+                )
+                .apply()
+
+            Log.d(
+                TAG,
+                "Global continuous-use limit = " +
+                        "$minutes minutes"
+            )
+        }
+
+        fun getContinuousUsageLimitMinutes(
+            context: Context
+        ): Long {
+
+            return getContinuousUsageLimitMillis(
+                context
+            ) /
+                    60_000L
+        }
+
+        fun setAppContinuousUsageLimitMinutes(
+            context: Context,
+            packageName: String,
+            minutes: Long
+        ) {
+
+            if (
+                packageName.isBlank()
+            ) {
+                return
+            }
+
+            context
+                .getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+                .edit()
+                .putLong(
+                    continuousUsageAppKey(
+                        packageName
+                    ),
+                    minutes.coerceAtLeast(
+                        1L
+                    ) *
+                            60L *
+                            1_000L
+                )
+                .apply()
+
+            Log.d(
+                TAG,
+                "App continuous-use limit for " +
+                        "$packageName = $minutes minutes"
+            )
+        }
+
+        fun clearAppContinuousUsageLimit(
+            context: Context,
+            packageName: String
+        ) {
+
+            context
+                .getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+                .edit()
+                .remove(
+                    continuousUsageAppKey(
+                        packageName
+                    )
+                )
+                .apply()
+        }
+
+        fun getAppContinuousUsageLimitMinutes(
+            context: Context,
+            packageName: String
+        ): Long? {
+
+            val millis =
                 context
                     .getSharedPreferences(
                         PREFS_NAME,
                         Context.MODE_PRIVATE
                     )
                     .getLong(
-                        KEY_UNLOCK_UNTIL_PREFIX +
-                                packageName,
+                        continuousUsageAppKey(
+                            packageName
+                        ),
                         0L
                     )
 
-            return unlockUntil >
-                    System.currentTimeMillis()
+            return millis
+                .takeIf {
+                    it > 0L
+                }
+                ?.div(
+                    60_000L
+                )
+        }
+
+        fun resetContinuousUsageLimit(
+            context: Context
+        ) {
+
+            context
+                .getSharedPreferences(
+                    PREFS_NAME,
+                    Context.MODE_PRIVATE
+                )
+                .edit()
+                .remove(
+                    KEY_CONTINUOUS_USAGE_LIMIT_MILLIS
+                )
+                .apply()
+        }
+
+        // =====================================================
+        // MANUAL TIMER CONTROL
+        // =====================================================
+
+        @Suppress("UNUSED_PARAMETER")
+        fun startContinuousTimer(
+            context: Context,
+            packageName: String
+        ) {
+
+            instance?.manuallyStartContinuousTimer(
+                packageName
+            )
+        }
+
+        fun stopContinuousTimer() {
+
+            instance?.stopUsageTimer()
         }
     }
 }

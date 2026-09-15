@@ -53,6 +53,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -61,6 +62,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -190,7 +195,7 @@ private val privacyPolicySections =
                 "If this policy changes, an updated version will be made available within the app.",
 
         "Contact" to
-                "Questions about this policy can be directed to the app developer."
+                "Questions or feedback about this policy can be directed to the developer via the official Google Play Store listing or at support@dontscroll.app."
     )
 
 // ============================================================
@@ -268,6 +273,23 @@ fun DontscrollApp() {
         )
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                permissionRefresh = System.currentTimeMillis()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    var showAccessibilityDisclosure by remember {
+        mutableStateOf(false)
+    }
+
     val settingsLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -308,12 +330,7 @@ fun DontscrollApp() {
                 usageAccessEnabled,
 
             onAccessibilityClick = {
-
-                settingsLauncher.launch(
-                    Intent(
-                        Settings.ACTION_ACCESSIBILITY_SETTINGS
-                    )
-                )
+                showAccessibilityDisclosure = true
             },
 
             onUsageAccessClick = {
@@ -325,6 +342,65 @@ fun DontscrollApp() {
                 )
             }
         )
+
+        if (showAccessibilityDisclosure) {
+            AlertDialog(
+                onDismissRequest = {
+                    showAccessibilityDisclosure = false
+                },
+                title = {
+                    Text(
+                        "Accessibility Service Disclosure",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            "Dontscroll uses the AccessibilityService API solely to detect when you open an app you have chosen to protect, allowing Dontscroll to display the delay waiting screen."
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "• Data accessed: Foreground app package names.\n" +
+                            "• Purpose: To trigger the intervention delay before opening protected apps.\n" +
+                            "• Privacy: Dontscroll does NOT collect, read, or share any personal data, keystrokes, or screen contents."
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "Tap 'Agree & Enable' to open Android Accessibility settings and activate Dontscroll.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showAccessibilityDisclosure = false
+                            settingsLauncher.launch(
+                                Intent(
+                                    Settings.ACTION_ACCESSIBILITY_SETTINGS
+                                )
+                            )
+                        }
+                    ) {
+                        Text(
+                            "Agree & Enable",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showAccessibilityDisclosure = false
+                        }
+                    ) {
+                        Text("Not Now")
+                    }
+                }
+            )
+        }
 
         return
     }
@@ -1007,14 +1083,16 @@ fun DontscrollMainScreen(
                 emptyList()
         )
 
-    val usageList =
-        remember(refresh) {
+    var usageList by remember {
+        mutableStateOf<List<ScreenTimeManager.AppUsage>>(emptyList())
+    }
 
-            ScreenTimeManager
-                .getTodayUsage(
-                    context
-                )
+    LaunchedEffect(refresh) {
+        val result = withContext(Dispatchers.IO) {
+            ScreenTimeManager.getTodayUsage(context)
         }
+        usageList = result
+    }
 
     val usageMap =
         usageList.associate {
@@ -1252,6 +1330,9 @@ fun DontscrollMainScreen(
 
         DelayDialog(
 
+            packageName =
+                app.packageName,
+
             appName =
                 app.displayName,
 
@@ -1268,7 +1349,8 @@ fun DontscrollMainScreen(
 
             onSave = {
                     delaySeconds,
-                    automatic ->
+                    automatic,
+                    continuousOverrideMinutes ->
 
                 if (
                     delaySeconds > 0L
@@ -1289,6 +1371,23 @@ fun DontscrollMainScreen(
                             automaticDelay =
                                 automatic
                         )
+
+                    if (continuousOverrideMinutes != null) {
+                        if (continuousOverrideMinutes > 0L) {
+                            DoomGuardAccessibilityService
+                                .setAppContinuousUsageLimitMinutes(
+                                    context,
+                                    app.packageName,
+                                    continuousOverrideMinutes
+                                )
+                        } else {
+                            DoomGuardAccessibilityService
+                                .clearAppContinuousUsageLimit(
+                                    context,
+                                    app.packageName
+                                )
+                        }
+                    }
 
                     scope.launch {
 
@@ -2348,6 +2447,11 @@ fun ProtectedAppsScreen(
                     blockedApp =
                         blocked,
 
+                    screenTimeMillis =
+                        usageMap[
+                            blocked.packageName
+                        ] ?: 0L,
+
                     onUnprotect = {
                         onUnprotect(blocked)
                     }
@@ -2641,6 +2745,8 @@ private fun ProtectedAppRow(
 
     blockedApp: BlockedApp,
 
+    screenTimeMillis: Long,
+
     onUnprotect: () -> Unit
 
 ) {
@@ -2706,7 +2812,9 @@ private fun ProtectedAppRow(
 
                             "Automatic delay · " +
                                     formatDelay(
-                                        blockedApp.unlockDelaySeconds
+                                        calculateAutomaticDelay(
+                                            screenTimeMillis
+                                        )
                                     )
 
                         } else {
@@ -2928,6 +3036,10 @@ fun SettingsScreen(
         mutableStateOf(false)
     }
 
+    var showContinuousLimitDialog by remember {
+        mutableStateOf(false)
+    }
+
     var pendingConfirmAction by remember {
         mutableStateOf<PendingConfirmAction?>(null)
     }
@@ -2983,6 +3095,14 @@ fun SettingsScreen(
     val breakActive =
         breakUntil >
                 System.currentTimeMillis()
+
+    val globalContinuousMinutes =
+        remember(settingsRefresh) {
+            DoomGuardAccessibilityService
+                .getContinuousUsageLimitMinutes(
+                    context
+                )
+        }
 
     LazyColumn(
 
@@ -3319,6 +3439,83 @@ fun SettingsScreen(
         }
 
         // ----------------------------------------------------
+        // CONTINUOUS INTERVENTION TIMER
+        // ----------------------------------------------------
+
+        item {
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                shape =
+                    RoundedCornerShape(24.dp),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme
+                                .colorScheme
+                                .surface
+                    )
+            ) {
+                Column(
+                    modifier =
+                        Modifier.padding(20.dp)
+                ) {
+                    Text(
+                        text =
+                            "Continuous intervention",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Spacer(
+                        Modifier.height(6.dp)
+                    )
+
+                    Text(
+                        text =
+                            "After you continue from an intervention, Dontscroll will intervene again after this much uninterrupted time in the app.",
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .onSurfaceVariant
+                    )
+
+                    Spacer(
+                        Modifier.height(12.dp)
+                    )
+
+                    Text(
+                        text =
+                            "$globalContinuousMinutes min systemwide",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .primary
+                    )
+
+                    Spacer(
+                        Modifier.height(12.dp)
+                    )
+
+                    PrimaryButton(
+                        text =
+                            "Change timer",
+                        onClick = {
+                            showContinuousLimitDialog =
+                                true
+                        }
+                    )
+                }
+            }
+        }
+
+        // ----------------------------------------------------
         // USAGE ACCESS
         // ----------------------------------------------------
 
@@ -3452,7 +3649,7 @@ fun SettingsScreen(
                     Text(
 
                         text =
-                            "Dontscroll helps you become more intentional with your screen time by adding friction before opening distracting apps so that you think twice before using the app (unless you're aysh lolll)",
+                            "Dontscroll helps you become more intentional with your screen time by adding friction before opening distracting apps so that you think twice before using the app.",
 
                         color =
                             MaterialTheme
@@ -3464,12 +3661,12 @@ fun SettingsScreen(
         }
 
         // ----------------------------------------------------
-        // SUPPORT THE DEVELOPER
+        // SHARE THE APP
         // ----------------------------------------------------
 
         item {
 
-            SupportDeveloperCard()
+            ShareAppCard()
         }
 
         item {
@@ -3478,6 +3675,31 @@ fun SettingsScreen(
                 Modifier.height(24.dp)
             )
         }
+    }
+
+    if (showContinuousLimitDialog) {
+
+        ContinuousLimitDialog(
+            currentMinutes =
+                globalContinuousMinutes,
+            onDismiss = {
+                showContinuousLimitDialog =
+                    false
+            },
+            onSave = { minutes ->
+                DoomGuardAccessibilityService
+                    .setContinuousUsageLimitMinutes(
+                        context,
+                        minutes
+                    )
+
+                showContinuousLimitDialog =
+                    false
+
+                settingsRefresh =
+                    System.currentTimeMillis()
+            }
+        )
     }
 
     if (showBreakDialog) {
@@ -3562,14 +3784,11 @@ fun SettingsScreen(
 }
 
 // ============================================================
-// SUPPORT THE DEVELOPER
+// SHARE THE APP
 // ============================================================
 
-private const val BUY_ME_A_COFFEE_URL =
-    "https://buymeacoffee.com/idkagn"
-
 @Composable
-private fun SupportDeveloperCard() {
+private fun ShareAppCard() {
 
     val context =
         LocalContext.current
@@ -3584,9 +3803,10 @@ private fun SupportDeveloperCard() {
 
         colors =
             CardDefaults.cardColors(
-
                 containerColor =
-                    ChartAmber.copy(alpha = 0.18f)
+                    MaterialTheme
+                        .colorScheme
+                        .surface
             )
     ) {
 
@@ -3598,7 +3818,7 @@ private fun SupportDeveloperCard() {
             Text(
 
                 text =
-                    "Enjoying Dontscroll?",
+                    "Share Dontscroll",
 
                 style =
                     MaterialTheme
@@ -3616,7 +3836,7 @@ private fun SupportDeveloperCard() {
             Text(
 
                 text =
-                    "It's free and always will be. If it's helped you scroll less, you can buy me a coffee.",
+                    "Help your friends reclaim their time by sharing Dontscroll with them.",
 
                 style =
                     MaterialTheme
@@ -3637,15 +3857,25 @@ private fun SupportDeveloperCard() {
 
                 onClick = {
 
-                    val intent =
+                    val sendIntent =
                         Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse(
-                                BUY_ME_A_COFFEE_URL
-                            )
-                        )
+                            Intent.ACTION_SEND
+                        ).apply {
 
-                    context.startActivity(intent)
+                            type = "text/plain"
+
+                            putExtra(
+                                Intent.EXTRA_TEXT,
+                                "Take control of your screen time with Dontscroll! Stop mindless scrolling and build better phone habits."
+                            )
+                        }
+
+                    context.startActivity(
+                        Intent.createChooser(
+                            sendIntent,
+                            "Share Dontscroll"
+                        )
+                    )
                 },
 
                 shape =
@@ -3653,17 +3883,20 @@ private fun SupportDeveloperCard() {
 
                 colors =
                     ButtonDefaults.buttonColors(
-
                         containerColor =
-                            ChartAmber,
+                            MaterialTheme
+                                .colorScheme
+                                .primary,
 
                         contentColor =
-                            Color.Black
+                            MaterialTheme
+                                .colorScheme
+                                .onPrimary
                     )
             ) {
 
                 Text(
-                    "Buy me a coffee",
+                    "Share App",
                     fontWeight =
                         FontWeight.Bold
                 )
@@ -3728,7 +3961,7 @@ private fun DoubleConfirmDialog(
 
         } else {
 
-            "Are you really sure, Palak??"
+            "Are you really sure?"
         }
 
     val message =
@@ -4327,6 +4560,8 @@ fun formatDelay(
 @Composable
 fun DelayDialog(
 
+    packageName: String,
+
     appName: String,
 
     screenTimeMillis: Long,
@@ -4336,7 +4571,8 @@ fun DelayDialog(
     onSave:
         (
         Long,
-        Boolean
+        Boolean,
+        Long?
     ) -> Unit
 
 ) {
@@ -4354,7 +4590,7 @@ fun DelayDialog(
     }
 
     var seconds by remember {
-        mutableStateOf("3")
+        mutableStateOf("15")
     }
 
     val automaticDelay =
@@ -4364,6 +4600,35 @@ fun DelayDialog(
                 screenTimeMillis
             )
         }
+
+    val context =
+        LocalContext.current
+
+    var useAppContinuousOverride by remember(packageName) {
+        mutableStateOf(
+            DoomGuardAccessibilityService
+                .getAppContinuousUsageLimitMinutes(
+                    context,
+                    packageName
+                ) != null
+        )
+    }
+
+    var appContinuousMinutes by remember(packageName) {
+        mutableStateOf(
+            (
+                    DoomGuardAccessibilityService
+                        .getAppContinuousUsageLimitMinutes(
+                            context,
+                            packageName
+                        )
+                        ?: DoomGuardAccessibilityService
+                            .getContinuousUsageLimitMinutes(
+                                context
+                            )
+                    ).toString()
+        )
+    }
 
     AlertDialog(
 
@@ -4596,6 +4861,91 @@ fun DelayDialog(
                         )
                     }
                 }
+
+                Spacer(
+                    Modifier.height(14.dp)
+                )
+
+                HorizontalDivider()
+
+                Spacer(
+                    Modifier.height(10.dp)
+                )
+
+                Text(
+                    text =
+                        "Continuous-use intervention",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Text(
+                    text =
+                        "After you continue, Dontscroll can intervene again when you stay in this app for the configured time.",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .onSurfaceVariant
+                )
+
+                Row(
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked =
+                            useAppContinuousOverride,
+                        onCheckedChange = {
+                            useAppContinuousOverride =
+                                it
+                        }
+                    )
+
+                    Text(
+                        "Use an app-specific timer"
+                    )
+                }
+
+                if (useAppContinuousOverride) {
+                    OutlinedTextField(
+                        value =
+                            appContinuousMinutes,
+                        onValueChange = {
+                            appContinuousMinutes =
+                                it.filter(
+                                    Char::isDigit
+                                )
+                        },
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        label = {
+                            Text("Minutes")
+                        },
+                        singleLine = true
+                    )
+                } else {
+                    Text(
+                        text =
+                            "Using systemwide timer: ${
+                                DoomGuardAccessibilityService
+                                    .getContinuousUsageLimitMinutes(
+                                        context
+                                    )
+                            } min",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .primary
+                    )
+                }
             }
         },
 
@@ -4639,7 +4989,16 @@ fun DelayDialog(
 
                         onSave(
                             delaySeconds,
-                            automatic
+                            automatic,
+                            if (useAppContinuousOverride) {
+                                appContinuousMinutes
+                                    .toLongOrNull()
+                                    ?.takeIf {
+                                        it > 0L
+                                    }
+                            } else {
+                                0L
+                            }
                         )
                     }
                 }
@@ -4667,6 +5026,93 @@ fun DelayDialog(
         }
     )
 
+}
+
+// ============================================================
+// CONTINUOUS INTERVENTION TIMER DIALOG
+// ============================================================
+
+@Composable
+private fun ContinuousLimitDialog(
+    currentMinutes: Long,
+    onDismiss: () -> Unit,
+    onSave: (Long) -> Unit
+) {
+    var minutes by remember(currentMinutes) {
+        mutableStateOf(
+            currentMinutes.toString()
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest =
+            onDismiss,
+        title = {
+            Text(
+                "Continuous intervention timer",
+                fontWeight =
+                    FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "This timer is systemwide by default. Every protected app uses it unless you give that app its own override in its protection settings."
+                )
+
+                Spacer(
+                    Modifier.height(14.dp)
+                )
+
+                OutlinedTextField(
+                    value =
+                        minutes,
+                    onValueChange = {
+                        minutes =
+                            it.filter(
+                                Char::isDigit
+                            )
+                    },
+                    label = {
+                        Text("Minutes")
+                    },
+                    singleLine = true,
+                    modifier =
+                        Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val value =
+                        minutes
+                            .toLongOrNull()
+                            ?.coerceAtLeast(1L)
+
+                    if (value != null) {
+                        onSave(value)
+                    }
+                }
+            ) {
+                Text(
+                    "Save",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .primary
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick =
+                    onDismiss
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 // ============================================================

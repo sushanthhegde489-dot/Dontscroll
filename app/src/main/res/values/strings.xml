@@ -3,7 +3,7 @@
     <string name="app_name">Dont Scroll</string>
 
     <string name="accessibility_service_description">
-        Detects when protected apps are opened and shows the Dont Scroll waiting screen.
+        Dont Scroll uses this service solely to detect when protected apps are opened and display the intervention waiting screen. It does not monitor keystrokes, read screen contents, or collect or share any personal data.
     </string>
 
 </resources>

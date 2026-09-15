@@ -2,6 +2,8 @@ package com.sushanth.dontscroll.data
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 
 fun getInstalledApps(context: Context): List<InstalledApp> {
 
@@ -11,12 +13,19 @@ fun getInstalledApps(context: Context): List<InstalledApp> {
         addCategory(Intent.CATEGORY_LAUNCHER)
     }
 
-    return pm.queryIntentActivities(
-        intent,
-        0
-    )
-    .asSequence()
-    .mapNotNull { resolveInfo ->
+    val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.queryIntentActivities(
+            intent,
+            PackageManager.ResolveInfoFlags.of(0)
+        )
+    } else {
+        @Suppress("DEPRECATION")
+        pm.queryIntentActivities(intent, 0)
+    }
+
+    return activities
+        .asSequence()
+        .mapNotNull { resolveInfo ->
 
         val packageName =
         resolveInfo.activityInfo.packageName

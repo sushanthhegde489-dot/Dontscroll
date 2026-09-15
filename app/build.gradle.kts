@@ -14,8 +14,8 @@ android {
         applicationId = "com.sushanth.dontscroll"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.3"
+        versionCode = 11
+        versionName = "1.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
