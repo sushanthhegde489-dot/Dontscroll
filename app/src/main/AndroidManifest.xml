@@ -2,8 +2,7 @@
 
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="com.sushanth.dontscroll">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Used for screen-time statistics.
          The user must manually grant Usage Access in Settings. -->

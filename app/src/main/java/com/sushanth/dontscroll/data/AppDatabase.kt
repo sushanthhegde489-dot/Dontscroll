@@ -10,7 +10,7 @@ import androidx.room.RoomDatabase
         BlockedApp::class
     ],
     version = 2,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
 
@@ -34,9 +34,7 @@ abstract class AppDatabase : RoomDatabase() {
                             AppDatabase::class.java,
                             "dontscroll.db"
                         )
-                            .fallbackToDestructiveMigration(
-                                dropAllTables = true
-                            )
+                            .fallbackToDestructiveMigration(dropAllTables = false)
                             .build()
                             .also {
                                 INSTANCE = it

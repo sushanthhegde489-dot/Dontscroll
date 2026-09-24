@@ -1,15 +1,25 @@
 *.iml
 .gradle
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
 .DS_Store
 /build
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iws
+*.ipr
+out/
+
+# Keystores & Signing Secrets
+Keys/
+*.jks
+*.keystore
+keystore.properties
+
+# Build & Temporary Artifacts
+brag-output/
+tests/

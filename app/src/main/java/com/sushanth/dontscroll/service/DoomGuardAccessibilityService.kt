@@ -49,6 +49,9 @@ class DoomGuardAccessibilityService :
     private var blockedAppsJob: Job? =
         null
 
+    private var breakExpirationJob: Job? =
+        null
+
     // =========================================================
     // BLOCKED PACKAGES
     // =========================================================
@@ -233,6 +236,14 @@ class DoomGuardAccessibilityService :
         stopUsageTimer()
 
         observeBlockedApps()
+
+        if (
+            isBreakActive(
+                applicationContext
+            )
+        ) {
+            scheduleBreakExpiration()
+        }
 
         instance =
             this
@@ -439,6 +450,35 @@ class DoomGuardAccessibilityService :
             foregroundActivityClass =
                 activityClassName
 
+            // If blocking is active and user is in a protected package without a valid unlock,
+            // intervene immediately (e.g. break expired while user was scrolling inside the app).
+            if (
+                isBlockingCurrentlyActive(
+                    applicationContext
+                ) &&
+                packageName in blockedPackages
+            ) {
+                val state =
+                    readState(packageName)
+
+                if (
+                    !state.interventionActive &&
+                    !interventionScreenVisible &&
+                    state.unlockUntil <= System.currentTimeMillis()
+                ) {
+                    Log.d(
+                        TAG,
+                        "Same-app event for blocked app without active unlock/intervention: $packageName"
+                    )
+
+                    showInitialIntervention(
+                        packageName
+                    )
+
+                    return
+                }
+            }
+
             Log.d(
                 TAG,
                 "Ignoring same-app window/activity change: " +
@@ -514,6 +554,19 @@ class DoomGuardAccessibilityService :
                 applicationContext
             )
         ) {
+
+            if (
+                isBreakActive(
+                    applicationContext
+                )
+            ) {
+                if (
+                    breakExpirationJob == null ||
+                    breakExpirationJob?.isActive != true
+                ) {
+                    scheduleBreakExpiration()
+                }
+            }
 
             stopUsageTimer()
             return
@@ -1359,16 +1412,19 @@ class DoomGuardAccessibilityService :
                 )
 
             if (
+                state.unlockUntil <=
+                System.currentTimeMillis() ||
                 elapsed >=
                 limit
             ) {
 
                 Log.d(
                     TAG,
-                    "Continuous-use limit reached: " +
+                    "Continuous-use limit reached or unlock expired: " +
                             "$packageName " +
                             "elapsed=$elapsed " +
-                            "limit=$limit"
+                            "limit=$limit " +
+                            "unlockUntil=${state.unlockUntil}"
                 )
 
                 triggerConsecutiveIntervention(
@@ -1829,6 +1885,129 @@ class DoomGuardAccessibilityService :
     }
 
     // =========================================================
+    // BREAK EXPIRATION
+    // =========================================================
+
+    private fun scheduleBreakExpiration() {
+
+        breakExpirationJob?.cancel()
+
+        val breakUntil =
+            getBreakUntil(
+                applicationContext
+            )
+
+        val remainingMillis =
+            breakUntil -
+                    System.currentTimeMillis()
+
+        if (
+            remainingMillis <= 0L
+        ) {
+            return
+        }
+
+        Log.d(
+            TAG,
+            "Scheduling break expiration in ${remainingMillis}ms"
+        )
+
+        breakExpirationJob =
+            scope.launch {
+
+                delay(
+                    remainingMillis
+                )
+
+                withContext(
+                    Dispatchers.Main.immediate
+                ) {
+                    handleBreakExpired()
+                }
+            }
+    }
+
+    private fun cancelBreakExpiration() {
+
+        breakExpirationJob?.cancel()
+
+        breakExpirationJob =
+            null
+    }
+
+    private fun handleBreakExpired() {
+
+        Log.d(
+            TAG,
+            "Handling break expiration"
+        )
+
+        if (
+            !isBlockingCurrentlyActive(
+                applicationContext
+            )
+        ) {
+            return
+        }
+
+        val activePkg =
+            try {
+                rootInActiveWindow
+                    ?.packageName
+                    ?.toString()
+            } catch (_: Exception) {
+                null
+            }
+
+        val current =
+            (if (
+                activePkg != null &&
+                !isTransientSystemPackage(activePkg) &&
+                activePkg != applicationContext.packageName
+            ) {
+                foregroundPackage =
+                    activePkg
+                activePkg
+            } else {
+                foregroundPackage
+            }) ?: return
+
+        if (
+            current !in blockedPackages
+        ) {
+            return
+        }
+
+        val state =
+            readState(current)
+
+        if (
+            state.interventionActive
+        ) {
+            showExistingIntervention(
+                current
+            )
+
+            return
+        }
+
+        if (
+            state.unlockUntil >
+            System.currentTimeMillis()
+        ) {
+            startUsageTimer(
+                current
+            )
+
+            return
+        }
+
+        showInitialIntervention(
+            current
+        )
+    }
+
+    // =========================================================
     // INTERRUPT
     // =========================================================
 
@@ -1842,6 +2021,7 @@ class DoomGuardAccessibilityService :
 
     override fun onDestroy() {
 
+        cancelBreakExpiration()
         blockedAppsJob?.cancel()
         usageMonitorJob?.cancel()
 
@@ -2174,6 +2354,8 @@ class DoomGuardAccessibilityService :
 
             instance?.awaitingInterventionReturn =
                 false
+
+            instance?.scheduleBreakExpiration()
         }
 
         fun endBreak(
@@ -2192,6 +2374,8 @@ class DoomGuardAccessibilityService :
                 )
                 .apply()
 
+            instance?.cancelBreakExpiration()
+
             instance?.stopUsageTimer()
 
             instance?.awaitingInterventionReturn =
@@ -2206,6 +2390,8 @@ class DoomGuardAccessibilityService :
 
             instance?.lastForegroundTransitionTime =
                 0L
+
+            instance?.handleBreakExpired()
         }
 
         // =====================================================

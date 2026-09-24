@@ -205,31 +205,37 @@ private val privacyPolicySections =
 fun isAccessibilityServiceEnabled(
     context: Context
 ): Boolean {
+    val accessibilityManager = context.getSystemService(
+        Context.ACCESSIBILITY_SERVICE
+    ) as? AccessibilityManager
 
-    val accessibilityManager =
-        context.getSystemService(
-            Context.ACCESSIBILITY_SERVICE
-        ) as AccessibilityManager
+    val enabledServices = accessibilityManager
+        ?.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        )
 
-    val enabledServices =
-        accessibilityManager
-            .getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
-            )
+    val isEnabledInManager = enabledServices?.any { serviceInfo ->
+        val service = serviceInfo.resolveInfo?.serviceInfo ?: return@any false
+        service.packageName == context.packageName &&
+                service.name == "com.sushanth.dontscroll.service.DoomGuardAccessibilityService"
+    } == true
 
-    return enabledServices.any { serviceInfo ->
-
-        val service =
-            serviceInfo.resolveInfo?.serviceInfo
-                ?: return@any false
-
-        service.packageName ==
-                context.packageName &&
-                service.name ==
-                "com.sushanth.dontscroll.service." +
-                "DoomGuardAccessibilityService"
+    if (isEnabledInManager) {
+        return true
     }
 
+    // Fallback for OEM ROMs (MIUI, ColorOS, EMUI) where service list query can lag behind system state
+    return try {
+        val settingValue = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val expected = "${context.packageName}/com.sushanth.dontscroll.service.DoomGuardAccessibilityService"
+        val expectedShort = "${context.packageName}/.service.DoomGuardAccessibilityService"
+        settingValue.contains(expected) || settingValue.contains(expectedShort)
+    } catch (_: Exception) {
+        false
+    }
 }
 
 // ============================================================
@@ -1327,24 +1333,16 @@ fun DontscrollMainScreen(
     }
 
     selectedApp?.let { app ->
+        val existingBlocked = blockedApps.firstOrNull { it.packageName == app.packageName }
 
         DelayDialog(
-
-            packageName =
-                app.packageName,
-
-            appName =
-                app.displayName,
-
-            screenTimeMillis =
-                usageMap[
-                    app.packageName
-                ] ?: 0L,
-
+            packageName = app.packageName,
+            appName = app.displayName,
+            screenTimeMillis = usageMap[app.packageName] ?: 0L,
+            initialDelaySeconds = existingBlocked?.unlockDelaySeconds,
+            initialAutomatic = existingBlocked?.automaticDelay ?: false,
             onDismiss = {
-
-                selectedApp =
-                    null
+                selectedApp = null
             },
 
             onSave = {
@@ -1739,6 +1737,17 @@ fun CircularUsageCard(
         apps.size +
                 if (hasOther) 1 else 0
 
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val strokeWidthPx = remember(density) {
+        with(density) { 32.dp.toPx() }
+    }
+    val backgroundStroke = remember(strokeWidthPx) {
+        Stroke(width = strokeWidthPx)
+    }
+    val arcStroke = remember(strokeWidthPx) {
+        Stroke(width = strokeWidthPx, cap = StrokeCap.Butt)
+    }
+
     Card(
 
         modifier =
@@ -1864,11 +1873,7 @@ fun CircularUsageCard(
                                     arcSize
                                 ),
 
-                        style =
-                            Stroke(
-                                width =
-                                    strokeWidth
-                            )
+                        style = backgroundStroke
                     )
 
                     if (
@@ -1940,14 +1945,7 @@ fun CircularUsageCard(
                                             arcSize
                                         ),
 
-                                style =
-                                    Stroke(
-                                        width =
-                                            strokeWidth,
-
-                                        cap =
-                                            StrokeCap.Butt
-                                    )
+                                style = arcStroke
                             )
 
                             currentAngle +=
@@ -1999,11 +1997,7 @@ fun CircularUsageCard(
                                             arcSize
                                         ),
 
-                                style =
-                                    Stroke(
-                                        width =
-                                            strokeWidth
-                                    )
+                                style = arcStroke
                             )
                         }
                     }
@@ -3533,14 +3527,12 @@ fun SettingsScreen(
                     "Open Usage Access",
 
                 onClick = {
-
-                    context.startActivity(
-
-                        Intent(
-                            Settings
-                                .ACTION_USAGE_ACCESS_SETTINGS
+                    try {
+                        context.startActivity(
+                            Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
                         )
-                    )
+                    } catch (_: Exception) {
+                    }
                 }
             )
         }
@@ -3563,14 +3555,12 @@ fun SettingsScreen(
                     "Open Accessibility",
 
                 onClick = {
-
-                    context.startActivity(
-
-                        Intent(
-                            Settings
-                                .ACTION_ACCESSIBILITY_SETTINGS
+                    try {
+                        context.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                         )
-                    )
+                    } catch (_: Exception) {
+                    }
                 }
             )
         }
@@ -3661,12 +3651,11 @@ fun SettingsScreen(
         }
 
         // ----------------------------------------------------
-        // SHARE THE APP
+        // SUPPORT THE DEVELOPER (BUY ME A COFFEE)
         // ----------------------------------------------------
 
         item {
-
-            ShareAppCard()
+            SupportDeveloperCard()
         }
 
         item {
@@ -3784,11 +3773,14 @@ fun SettingsScreen(
 }
 
 // ============================================================
-// SHARE THE APP
+// SUPPORT THE DEVELOPER (BUY ME A COFFEE)
 // ============================================================
 
+private const val BUY_ME_A_COFFEE_URL =
+    "https://buymeacoffee.com/idkagn"
+
 @Composable
-private fun ShareAppCard() {
+private fun SupportDeveloperCard() {
 
     val context =
         LocalContext.current
@@ -3804,21 +3796,21 @@ private fun ShareAppCard() {
         colors =
             CardDefaults.cardColors(
                 containerColor =
-                    MaterialTheme
-                        .colorScheme
-                        .surface
+                    ChartAmber.copy(alpha = 0.18f)
             )
     ) {
 
         Column(
             modifier =
-                Modifier.padding(20.dp)
+                Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
         ) {
 
             Text(
 
                 text =
-                    "Share Dontscroll",
+                    "Enjoying Dontscroll?",
 
                 style =
                     MaterialTheme
@@ -3830,13 +3822,13 @@ private fun ShareAppCard() {
             )
 
             Spacer(
-                Modifier.height(3.dp)
+                Modifier.height(4.dp)
             )
 
             Text(
 
                 text =
-                    "Help your friends reclaim their time by sharing Dontscroll with them.",
+                    "It's free and always will be. If it has helped you scroll less and reclaim your time, you can buy me a coffee to support continued development.",
 
                 style =
                     MaterialTheme
@@ -3856,26 +3848,16 @@ private fun ShareAppCard() {
             Button(
 
                 onClick = {
-
-                    val sendIntent =
-                        Intent(
-                            Intent.ACTION_SEND
+                    try {
+                        val intent = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse(BUY_ME_A_COFFEE_URL)
                         ).apply {
-
-                            type = "text/plain"
-
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Take control of your screen time with Dontscroll! Stop mindless scrolling and build better phone habits."
-                            )
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
-
-                    context.startActivity(
-                        Intent.createChooser(
-                            sendIntent,
-                            "Share Dontscroll"
-                        )
-                    )
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                    }
                 },
 
                 shape =
@@ -3884,27 +3866,23 @@ private fun ShareAppCard() {
                 colors =
                     ButtonDefaults.buttonColors(
                         containerColor =
-                            MaterialTheme
-                                .colorScheme
-                                .primary,
+                            ChartAmber,
 
                         contentColor =
-                            MaterialTheme
-                                .colorScheme
-                                .onPrimary
+                            Color.Black
                     )
             ) {
 
                 Text(
-                    "Share App",
+                    "Buy me a coffee",
                     fontWeight =
                         FontWeight.Bold
                 )
             }
         }
     }
-
 }
+
 
 // ============================================================
 // PENDING CONFIRM ACTION
@@ -4031,15 +4009,8 @@ private fun DoubleConfirmDialog(
             }
 
             val confirmY = remember(step, action) {
-
-                val minY = 180
-
-                val maxY =
-                    (maxHeight - 160.dp)
-                        .value
-                        .toInt()
-                        .coerceAtLeast(minY + 1)
-
+                val minY = (maxHeight.value * 0.28f).toInt().coerceAtLeast(80)
+                val maxY = (maxHeight.value * 0.72f).toInt().coerceAtLeast(minY + 1)
                 Random.nextInt(minY, maxY).dp
             }
 
@@ -4559,38 +4530,30 @@ fun formatDelay(
 
 @Composable
 fun DelayDialog(
-
     packageName: String,
-
     appName: String,
-
     screenTimeMillis: Long,
-
+    initialDelaySeconds: Long? = null,
+    initialAutomatic: Boolean = false,
     onDismiss: () -> Unit,
-
-    onSave:
-        (
-        Long,
-        Boolean,
-        Long?
-    ) -> Unit
-
+    onSave: (Long, Boolean, Long?) -> Unit
 ) {
-
-    var automatic by remember {
-        mutableStateOf(false)
+    var automatic by remember(initialAutomatic) {
+        mutableStateOf(initialAutomatic)
     }
 
-    var hours by remember {
-        mutableStateOf("0")
+    val initialTotal = initialDelaySeconds ?: 15L
+
+    var hours by remember(initialDelaySeconds) {
+        mutableStateOf((initialTotal / 3600L).toString())
     }
 
-    var minutes by remember {
-        mutableStateOf("0")
+    var minutes by remember(initialDelaySeconds) {
+        mutableStateOf(((initialTotal % 3600L) / 60L).toString())
     }
 
-    var seconds by remember {
-        mutableStateOf("15")
+    var seconds by remember(initialDelaySeconds) {
+        mutableStateOf((initialTotal % 60L).toString())
     }
 
     val automaticDelay =

@@ -448,13 +448,9 @@ class InterventionActivity :
                     targetPackage
                 )
 
-        if (
-            launchIntent == null
-        ) {
-
-            isUnlocking =
-                false
-
+        if (launchIntent == null) {
+            isUnlocking = false
+            navigateHomeAndFinish()
             return
         }
 
@@ -464,25 +460,12 @@ class InterventionActivity :
         )
 
         try {
-
-            startActivity(
-                launchIntent
-            )
-
+            startActivity(launchIntent)
             finishAndRemoveTask()
-
-        } catch (
-            exception: Exception
-        ) {
-
-            Log.e(
-                "DoomGuard",
-                "Unable to launch target app",
-                exception
-            )
-
-            isUnlocking =
-                false
+        } catch (exception: Exception) {
+            Log.e("DoomGuard", "Unable to launch target app", exception)
+            isUnlocking = false
+            navigateHomeAndFinish()
         }
     }
 
@@ -493,13 +476,11 @@ class InterventionActivity :
     private fun openTargetApplication(
         packageName: String
     ) {
-
-        val launchIntent =
-            packageManager
-                .getLaunchIntentForPackage(
-                    packageName
-                )
-                ?: return
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        if (launchIntent == null) {
+            navigateHomeAndFinish()
+            return
+        }
 
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -507,20 +488,11 @@ class InterventionActivity :
         )
 
         try {
-
-            startActivity(
-                launchIntent
-            )
-
-        } catch (
-            exception: Exception
-        ) {
-
-            Log.e(
-                "DoomGuard",
-                "Unable to launch target app",
-                exception
-            )
+            startActivity(launchIntent)
+            finishAndRemoveTask()
+        } catch (exception: Exception) {
+            Log.e("DoomGuard", "Unable to launch target app", exception)
+            navigateHomeAndFinish()
         }
     }
 
